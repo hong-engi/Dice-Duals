@@ -1,0 +1,202 @@
+{
+  "tiers": {
+    "COMMON": {
+      "unique_once": false,
+      "options": [
+        {
+          "id": "atk_pct_small",
+          "display": "공격력이 2~4% 강화된다",
+          "effects": [
+            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 0.02, "max": 0.04 }, "round": 1 }
+          ]
+        }
+      ]
+    },
+
+    "RARE": {
+      "unique_once": false,
+      "options": [
+        {
+          "id": "atk_pct_mid",
+          "display": "공격력이 8~12% 강화된다",
+          "effects": [
+            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 0.08, "max": 0.12 }, "round": 1 }
+          ]
+        }
+      ]
+    },
+
+    "SPECIAL": {
+      "unique_once": false,
+      "options": [
+        {
+          "id": "atk_pct_special",
+          "display": "공격력이 20~30% 강화된다",
+          "effects": [
+            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 0.20, "max": 0.30 }, "round": 1 }
+          ]
+        },
+        {
+          "id": "ignore_def",
+          "display": "방어를 무시한다",
+          "effects": [
+            { "type": "flag.set", "flag": "ignore_defense", "value": true }
+          ]
+        },
+        {
+          "id": "range_plus_1",
+          "display": "거리 1 추가",
+          "effects": [
+            { "type": "stat.add", "stat": "range", "value": 1 }
+          ]
+        }
+      ]
+    },
+
+    "HEROIC": {
+      "unique_once": false,
+      "options": [
+        {
+          "id": "atk_pct_heroic",
+          "display": "공격력이 50~80% 강화된다",
+          "effects": [
+            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 0.50, "max": 0.80 }, "round": 1 }
+          ]
+        },
+        {
+          "id": "bleed_30_3",
+          "display": "공격력의 30%만큼 출혈을 3턴 가한다",
+          "effects": [
+            { "type": "effect.additive", "effect": "bleed", "field": "ratio", "value": 0.30 },
+            { "type": "effect.max", "effect": "bleed", "field": "turns", "value": 3 }
+          ]
+        },
+        {
+          "id": "armor_down_20",
+          "display": "상대의 방어력을 20% 감소시킨다",
+          "effects": [
+            { "type": "effect.mulstack_reduction", "effect": "armor_down", "field": "ratio", "value": 0.20 }
+          ]
+        }
+      ]
+    },
+
+    "LEGENDARY": {
+      "unique_once": false,
+      "options": [
+        {
+          "id": "atk_pct_legend",
+          "display": "공격력이 100~150% 강화된다",
+          "effects": [
+            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 1.00, "max": 1.50 }, "round": 1 }
+          ]
+        },
+        {
+          "id": "freeze_0_5",
+          "display": "빙결을 0.5턴 가한다",
+          "effects": [
+            { "type": "effect.additive", "effect": "freeze", "field": "turns", "value": 0.5 }
+          ]
+        },
+        {
+          "id": "shield_15",
+          "display": "피해량의 15%만큼 보호막을 얻는다",
+          "effects": [
+            { "type": "effect.additive", "effect": "shield", "field": "ratio", "value": 0.15 }
+          ]
+        },
+        {
+          "id": "bleed_50_3",
+          "display": "공격력의 50%만큼 출혈을 3턴 가한다",
+          "effects": [
+            { "type": "effect.additive", "effect": "bleed", "field": "ratio", "value": 0.50 },
+            { "type": "effect.max", "effect": "bleed", "field": "turns", "value": 3 }
+          ]
+        },
+        {
+          "id": "armor_down_40",
+          "display": "상대의 방어력을 40% 감소시킨다",
+          "effects": [
+            { "type": "effect.mulstack_reduction", "effect": "armor_down", "field": "ratio", "value": 0.40 }
+          ]
+        },
+        {
+          "id": "range_plus_2",
+          "display": "거리 2 추가",
+          "effects": [
+            { "type": "stat.add", "stat": "range", "value": 2 }
+          ]
+        }
+      ]
+    },
+
+    "MYTHICAL": {
+      "unique_once": false,
+      "options": [
+        {
+          "id": "atk_pct_myth",
+          "display": "공격력이 200~300% 강화된다",
+          "effects": [
+            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 2.00, "max": 3.00 }, "round": 1 }
+          ]
+        },
+        {
+          "id": "draw_0_5",
+          "display": "카드를 0.5장 뽑는다",
+          "effects": [
+            { "type": "effect.additive", "effect": "draw", "field": "cards", "value": 0.5 }
+          ]
+        },
+        {
+          "id": "freeze_1",
+          "display": "빙결을 1턴 가한다",
+          "effects": [
+            { "type": "effect.additive", "effect": "freeze", "field": "turns", "value": 1.0 }
+          ]
+        },
+        {
+          "id": "double_hit",
+          "display": "공격이 두 번 적용된다",
+          "effects": [
+            { "type": "flag.set", "flag": "double_hit", "value": true }
+          ]
+        }
+      ]
+    },
+
+    "UNIQUE": {
+      "unique_once": true,
+      "overflow_to": "MYTHICAL",
+      "options": [
+        {
+          "id": "draw_1",
+          "display": "카드를 1장 뽑는다",
+          "effects": [
+            { "type": "effect.additive", "effect": "draw", "field": "cards", "value": 1.0 }
+          ]
+        },
+        {
+          "id": "aoe_all",
+          "display": "모든 적에게 피해를 입힌다",
+          "effects": [
+            { "type": "flag.set", "flag": "aoe_all_enemies", "value": true }
+          ]
+        },
+        {
+          "id": "summon_wolf",
+          "display": "늑대를 소환한다",
+          "effects": [
+            { "type": "effect.set_if_none", "effect": "summon", "field": "unit", "value": "wolf" }
+          ]
+        },
+        {
+          "id": "atk_300",
+          "display": "전체 공격력이 300% 강화된다",
+          "effects": [
+            { "type": "flag.set", "flag": "triple_attack", "value": true}
+          ]
+        }
+      ]
+    }
+  }
+}

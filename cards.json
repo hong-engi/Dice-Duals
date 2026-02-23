@@ -1,0 +1,25 @@
+{
+  "cards": [
+    {
+      "id": "atk_001",
+      "name": "기본 공격",
+      "type": "attack",
+      "stats": {
+        "attack": 100,
+        "range": 1
+      },
+      "effects": {
+        "ignore_defense": false,
+        "double_hit": false,
+        "aoe_all_enemies": false,
+        "freeze_turns": 0.0,
+        "shield_ratio": 0.0,
+        "bleed_ratio": 0.0,
+        "bleed_turns": 0,
+        "armor_down_ratio": 0.0,
+        "draw_cards": 0.0,
+        "summon_unit": null
+      }
+    }
+  ]
+}
