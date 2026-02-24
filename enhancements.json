@@ -7,7 +7,12 @@
           "id": "atk_pct_small",
           "display": "공격력이 2~4% 강화된다",
           "effects": [
-            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 0.02, "max": 0.04 }, "round": 1 }
+            {
+              "type": "stat.mul",
+              "stat": "attack",
+              "value": { "dist": "uniform", "min": 0.02, "max": 0.04 },
+              "round": 1
+            }
           ]
         }
       ]
@@ -20,7 +25,24 @@
           "id": "atk_pct_mid",
           "display": "공격력이 8~12% 강화된다",
           "effects": [
-            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 0.08, "max": 0.12 }, "round": 1 }
+            {
+              "type": "stat.mul",
+              "stat": "attack",
+              "value": { "dist": "uniform", "min": 0.08, "max": 0.12 },
+              "round": 1
+            }
+          ]
+        },
+        {
+          "id": "armor_down_3_5",
+          "display": "상대의 방어력을 3~5% 감소시킨다",
+          "effects": [
+            {
+              "type": "effect.additive",
+              "effect": "armor_down",
+              "field": "ratio",
+              "value": { "dist": "uniform", "min": 0.03, "max": 0.05 }
+            }
           ]
         }
       ]
@@ -33,21 +55,32 @@
           "id": "atk_pct_special",
           "display": "공격력이 20~30% 강화된다",
           "effects": [
-            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 0.20, "max": 0.30 }, "round": 1 }
+            {
+              "type": "stat.mul",
+              "stat": "attack",
+              "value": { "dist": "uniform", "min": 0.2, "max": 0.3 },
+              "round": 1
+            }
           ]
         },
         {
-          "id": "ignore_def",
-          "display": "방어를 무시한다",
+          "id": "bleed_20_3",
+          "display": "공격력의 20%만큼 출혈을 3턴 가한다",
           "effects": [
-            { "type": "flag.set", "flag": "ignore_defense", "value": true }
+            { "type": "effect.additive", "effect": "bleed", "field": "ratio", "value": 0.2 },
+            { "type": "effect.max", "effect": "bleed", "field": "turns", "value": 3 }
           ]
         },
         {
-          "id": "range_plus_1",
-          "display": "거리 1 추가",
+          "id": "armor_down_7_10",
+          "display": "상대의 방어력을 7~10% 감소시킨다",
           "effects": [
-            { "type": "stat.add", "stat": "range", "value": 1 }
+            {
+              "type": "effect.additive",
+              "effect": "armor_down",
+              "field": "ratio",
+              "value": { "dist": "uniform", "min": 0.07, "max": 0.1 }
+            }
           ]
         }
       ]
@@ -60,22 +93,46 @@
           "id": "atk_pct_heroic",
           "display": "공격력이 50~80% 강화된다",
           "effects": [
-            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 0.50, "max": 0.80 }, "round": 1 }
+            {
+              "type": "stat.mul",
+              "stat": "attack",
+              "value": { "dist": "uniform", "min": 0.5, "max": 0.8 },
+              "round": 1
+            }
           ]
         },
         {
           "id": "bleed_30_3",
           "display": "공격력의 30%만큼 출혈을 3턴 가한다",
           "effects": [
-            { "type": "effect.additive", "effect": "bleed", "field": "ratio", "value": 0.30 },
+            { "type": "effect.additive", "effect": "bleed", "field": "ratio", "value": 0.3 },
             { "type": "effect.max", "effect": "bleed", "field": "turns", "value": 3 }
           ]
         },
         {
-          "id": "armor_down_20",
-          "display": "상대의 방어력을 20% 감소시킨다",
+          "id": "freeze_0_2",
+          "display": "빙결을 0.2턴 가한다",
           "effects": [
-            { "type": "effect.mulstack_reduction", "effect": "armor_down", "field": "ratio", "value": 0.20 }
+            { "type": "effect.additive", "effect": "freeze", "field": "turns", "value": 0.2 }
+          ]
+        },
+        {
+          "id": "armor_down_12_15",
+          "display": "상대의 방어력을 12~15% 감소시킨다",
+          "effects": [
+            {
+              "type": "effect.additive",
+              "effect": "armor_down",
+              "field": "ratio",
+              "value": { "dist": "uniform", "min": 0.12, "max": 0.15 }
+            }
+          ]
+        },
+        {
+          "id": "shield_7",
+          "display": "피해량의 7%만큼 보호막을 얻는다",
+          "effects": [
+            { "type": "effect.additive", "effect": "shield", "field": "ratio", "value": 0.07 }
           ]
         }
       ]
@@ -88,7 +145,20 @@
           "id": "atk_pct_legend",
           "display": "공격력이 100~150% 강화된다",
           "effects": [
-            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 1.00, "max": 1.50 }, "round": 1 }
+            {
+              "type": "stat.mul",
+              "stat": "attack",
+              "value": { "dist": "uniform", "min": 1.0, "max": 1.5 },
+              "round": 1
+            }
+          ]
+        },
+        {
+          "id": "bleed_50_3",
+          "display": "공격력의 50%만큼 출혈을 3턴 가한다",
+          "effects": [
+            { "type": "effect.additive", "effect": "bleed", "field": "ratio", "value": 0.5 },
+            { "type": "effect.max", "effect": "bleed", "field": "turns", "value": 3 }
           ]
         },
         {
@@ -99,32 +169,36 @@
           ]
         },
         {
+          "id": "armor_down_18_30",
+          "display": "상대의 방어력을 18~30% 감소시킨다",
+          "effects": [
+            {
+              "type": "effect.additive",
+              "effect": "armor_down",
+              "field": "ratio",
+              "value": { "dist": "uniform", "min": 0.18, "max": 0.3 }
+            }
+          ]
+        },
+        {
+          "id": "draw_0_2",
+          "display": "카드를 0.2장 뽑는다",
+          "effects": [
+            { "type": "effect.additive", "effect": "draw", "field": "cards", "value": 0.2 }
+          ]
+        },
+        {
+          "id": "range_plus_1",
+          "display": "거리 1 추가",
+          "effects": [
+            { "type": "stat.add", "stat": "range", "value": 1 }
+          ]
+        },
+        {
           "id": "shield_15",
           "display": "피해량의 15%만큼 보호막을 얻는다",
           "effects": [
             { "type": "effect.additive", "effect": "shield", "field": "ratio", "value": 0.15 }
-          ]
-        },
-        {
-          "id": "bleed_50_3",
-          "display": "공격력의 50%만큼 출혈을 3턴 가한다",
-          "effects": [
-            { "type": "effect.additive", "effect": "bleed", "field": "ratio", "value": 0.50 },
-            { "type": "effect.max", "effect": "bleed", "field": "turns", "value": 3 }
-          ]
-        },
-        {
-          "id": "armor_down_40",
-          "display": "상대의 방어력을 40% 감소시킨다",
-          "effects": [
-            { "type": "effect.mulstack_reduction", "effect": "armor_down", "field": "ratio", "value": 0.40 }
-          ]
-        },
-        {
-          "id": "range_plus_2",
-          "display": "거리 2 추가",
-          "effects": [
-            { "type": "stat.add", "stat": "range", "value": 2 }
           ]
         }
       ]
@@ -137,14 +211,20 @@
           "id": "atk_pct_myth",
           "display": "공격력이 200~300% 강화된다",
           "effects": [
-            { "type": "stat.mul", "stat": "attack", "value": { "dist": "uniform", "min": 2.00, "max": 3.00 }, "round": 1 }
+            {
+              "type": "stat.mul",
+              "stat": "attack",
+              "value": { "dist": "uniform", "min": 2.0, "max": 3.0 },
+              "round": 1
+            }
           ]
         },
         {
-          "id": "draw_0_5",
-          "display": "카드를 0.5장 뽑는다",
+          "id": "bleed_80_3",
+          "display": "공격력의 80%만큼 출혈을 3턴 가한다",
           "effects": [
-            { "type": "effect.additive", "effect": "draw", "field": "cards", "value": 0.5 }
+            { "type": "effect.additive", "effect": "bleed", "field": "ratio", "value": 0.8 },
+            { "type": "effect.max", "effect": "bleed", "field": "turns", "value": 3 }
           ]
         },
         {
@@ -155,10 +235,36 @@
           ]
         },
         {
-          "id": "double_hit",
-          "display": "공격이 두 번 적용된다",
+          "id": "armor_down_30_50",
+          "display": "상대의 방어력을 30~50% 감소시킨다",
           "effects": [
-            { "type": "flag.set", "flag": "double_hit", "value": true }
+            {
+              "type": "effect.additive",
+              "effect": "armor_down",
+              "field": "ratio",
+              "value": { "dist": "uniform", "min": 0.3, "max": 0.5 }
+            }
+          ]
+        },
+        {
+          "id": "draw_0_5",
+          "display": "카드를 0.5장 뽑는다",
+          "effects": [
+            { "type": "effect.additive", "effect": "draw", "field": "cards", "value": 0.5 }
+          ]
+        },
+        {
+          "id": "range_plus_2",
+          "display": "거리 2 추가",
+          "effects": [
+            { "type": "stat.add", "stat": "range", "value": 2 }
+          ]
+        },
+        {
+          "id": "shield_25",
+          "display": "피해량의 25%만큼 보호막을 얻는다",
+          "effects": [
+            { "type": "effect.additive", "effect": "shield", "field": "ratio", "value": 0.25 }
           ]
         }
       ]
@@ -169,17 +275,17 @@
       "overflow_to": "MYTHICAL",
       "options": [
         {
+          "id": "atk_300",
+          "display": "전체 공격력이 300% 강화된다",
+          "effects": [
+            { "type": "stat.mul", "stat": "attack", "value": 3.0, "round": 1 }
+          ]
+        },
+        {
           "id": "draw_1",
           "display": "카드를 1장 뽑는다",
           "effects": [
             { "type": "effect.additive", "effect": "draw", "field": "cards", "value": 1.0 }
-          ]
-        },
-        {
-          "id": "aoe_all",
-          "display": "모든 적에게 피해를 입힌다",
-          "effects": [
-            { "type": "flag.set", "flag": "aoe_all_enemies", "value": true }
           ]
         },
         {
@@ -190,10 +296,25 @@
           ]
         },
         {
-          "id": "atk_300",
-          "display": "전체 공격력이 300% 강화된다",
+          "id": "max_range_aoe",
+          "display": "최대 거리, 광역 공격",
           "effects": [
-            { "type": "flag.set", "flag": "triple_attack", "value": true}
+            { "type": "flag.set", "flag": "max_range", "value": true },
+            { "type": "flag.set", "flag": "aoe", "value": true }
+          ]
+        },
+        {
+          "id": "double_apply",
+          "display": "두 번 적용",
+          "effects": [
+            { "type": "flag.set", "flag": "double_hit", "value": true }
+          ]
+        },
+        {
+          "id": "resource_plus_1",
+          "display": "자원 +1",
+          "effects": [
+            { "type": "stat.add", "stat": "resource", "value": 1 }
           ]
         }
       ]

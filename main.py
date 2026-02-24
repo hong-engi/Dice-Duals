@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import List, Tuple, Dict, Any, Optional
 from collections import Counter
+from cards import EnhancementEngine
 
 
 class Tier(IntEnum):
@@ -51,8 +52,8 @@ def fmt_ratio_0(x: float) -> str:
     return f"{x*100:.0f}%"
 
 
-def fmt_ratio_1(x: float) -> str:
-    return f"{x*100:.1f}%"
+def fmt_ratio_2(x: float) -> str:
+    return f"{x*100:.2f}%"
 
 
 def safe_float(v: Any, default: float = 0.0) -> float:
@@ -438,9 +439,12 @@ class EnhanceGacha:
         for idx in picks:
             opt = engine.preview_option(card, Tier(idx).name, rng=random)
             if opt is None:
-                option_infos.append({"tier": idx, "display": "(옵션 없음)", "effects": []})
+                option_infos.append({"tier": idx, "display": "(옵션 없음)", "effects": [], "opt": None})
             else:
-                option_infos.append({"tier": idx, "display": opt.get("display", opt.get("id", "")), "effects": opt.get("effects", [])})
+                disp = opt.get("display", opt.get("id", ""))
+                if opt.get("max_range", False):
+                    disp = f"{disp} (max range)"
+                option_infos.append({"tier": idx, "display": disp, "effects": opt.get("effects", []), "opt": opt})
 
         return picks, option_infos
 
@@ -485,239 +489,6 @@ class CardState:
             enhancement_counts=dict(d.get("enhancement_counts", {})),
             enhancement_log=list(d.get("enhancement_log", [])),
         )
-
-
-class EnhancementEngine:
-    def __init__(self, cfg: Dict[str, Any]):
-        self.cfg = cfg
-        self.tiers_cfg: Dict[str, Any] = self.cfg["tiers"]
-        self.tier_names = list(self.tiers_cfg.keys())
-
-    @staticmethod
-    def load(path: str) -> "EnhancementEngine":
-        with open(path, "r", encoding="utf-8") as f:
-            return EnhancementEngine(json.load(f))
-
-    def _roll_value(self, spec: Any, rng: Any) -> Any:
-        if isinstance(spec, (int, float, str, bool)) or spec is None:
-            return spec
-        if isinstance(spec, dict) and spec.get("dist") == "uniform":
-            return rng.uniform(float(spec["min"]), float(spec["max"]))
-        raise ValueError(f"Unknown value spec: {spec}")
-
-    def _apply_effect(self, card: CardState, eff: Dict[str, Any], rng: Any) -> None:
-        et = eff["type"]
-
-        if et == "stat.add":
-            stat = eff["stat"]
-            v = eff["value"]
-            cur = card.stats.get(stat, 0)
-            nxt = cur + v
-            if stat == "range":
-                nxt = min(3, int(nxt))
-            card.stats[stat] = nxt
-            return None
-
-        if et == "stat.mul":
-            stat = eff["stat"]
-            ratio = float(self._roll_value(eff["value"], rng))
-            if stat == "attack":
-                card.stats["attack_bonus_ratio"] = float(card.stats.get("attack_bonus_ratio", 0.0)) + ratio
-                return f"{ratio*100:.1f}%"
-            else:
-                base = float(card.stats.get(stat, 0))
-                card.stats[stat] = base * (1.0 + ratio)
-                return None
-
-        if et == "stat.mul_fixed":
-            stat = eff["stat"]
-            ratio = float(eff["value"])
-            if stat == "attack":
-                card.stats["attack_bonus_ratio"] = float(card.stats.get("attack_bonus_ratio", 0.0)) + ratio
-            else:
-                base = float(card.stats.get(stat, 0))
-                card.stats[stat] = base * (1.0 + ratio)
-            return
-
-        if et == "flag.set":
-            flag = eff["flag"]
-            card.effects[flag] = bool(eff["value"])
-            return
-
-        if et == "effect.additive":
-            effect = eff["effect"]
-            field = eff["field"]
-            key = f"{effect}_{field}"
-            v = float(eff["value"])
-            card.effects[key] = float(card.effects.get(key, 0.0)) + v
-            if effect == "draw" and field == "cards":
-                card.effects[key] = min(float(card.effects.get(key, 0.0)), 1.0)
-            if effect == "freeze" and field == "turns":
-                card.effects[key] = min(float(card.effects.get(key, 0.0)), 3.0)
-            return
-
-        if et == "effect.max":
-            effect = eff["effect"]
-            field = eff["field"]
-            key = f"{effect}_{field}"
-            v = eff["value"]
-            cur = card.effects.get(key, 0)
-            card.effects[key] = max(cur, v)
-            return
-
-        if et == "effect.mulstack_reduction":
-            effect = eff["effect"]
-            field = eff["field"]
-            key = f"{effect}_{field}"
-            r = float(eff["value"])
-            old = float(card.effects.get(key, 0.0))
-            card.effects[key] = 1.0 - (1.0 - old) * (1.0 - r)
-            return
-
-        if et == "effect.set_if_none":
-            effect = eff["effect"]
-            field = eff["field"]
-            key = f"{effect}_{field}"
-            if card.effects.get(key, None) is None:
-                card.effects[key] = eff["value"]
-            return
-
-        raise ValueError(f"Unknown effect type: {et}")
-
-    def apply_tier(self, card: CardState, tier: str, rng: Any = None) -> Dict[str, Any]:
-        if rng is None:
-            rng = random
-        card.ensure_counts(self.tier_names)
-
-        rolled_tier = tier
-        tier_cfg = self.tiers_cfg[tier]
-
-        if tier_cfg.get("unique_once", False):
-            if card.enhancement_counts.get(tier, 0) >= 1:
-                overflow = tier_cfg.get("overflow_to", "MYTHICAL")
-                tier = overflow
-                tier_cfg = self.tiers_cfg[tier]
-
-        options = tier_cfg["options"]
-
-        def option_valid(opt: Dict[str, Any]) -> bool:
-            for eff in opt.get("effects", []):
-                et = eff.get("type")
-
-                if et == "flag.set":
-                    flag = eff.get("flag")
-                    val = bool(eff.get("value"))
-                    if val and bool(card.effects.get(flag, False)):
-                        return False
-
-                if et == "effect.set_if_none":
-                    effect = eff.get("effect")
-                    field = eff.get("field")
-                    key = f"{effect}_{field}"
-                    if card.effects.get(key, None) is not None:
-                        return False
-
-                if et == "stat.add":
-                    stat = eff.get("stat")
-                    if stat == "range":
-                        cur = safe_int(card.stats.get("range", 0))
-                        if cur >= 3:
-                            return False
-                
-                if et == "effect.additive":
-                    effect = eff.get("effect")
-                    field = eff.get("field")
-                    key = f"{effect}_{field}"
-                    if effect == "draw" and field == "cards":
-                        cur = safe_float(card.effects.get(key, 0.0))
-                        if cur >= 1.0:
-                            return False
-                    if effect == "freeze" and field == "turns":
-                        cur = safe_float(card.effects.get(key, 0.0))
-                        if cur >= 3.0:
-                            return False
-            return True
-
-        valid = [o for o in options if option_valid(o)]
-        opt = rng.choice(valid if valid else options)
-
-        roll_parts = []
-        for eff in opt.get("effects", []):
-            rolled = self._apply_effect(card, eff, rng)
-            if rolled is not None:
-                roll_parts.append(rolled)
-
-        card.enhancement_counts[tier] = card.enhancement_counts.get(tier, 0) + 1
-        card.enhancement_log.append({"rolled_tier": rolled_tier, "tier": tier, "option_id": opt.get("id", ""), "display": opt.get("display", "")})
-
-        roll_text = ""
-        if roll_parts:
-            roll_text = " [" + ", ".join(roll_parts) + "]"
-
-        return {
-            "rolled_tier": rolled_tier,
-            "tier_used": tier,
-            "option_id": opt.get("id", ""),
-            "display": opt.get("display", opt.get("id", "")),
-            "roll_text": roll_text,
-        }
-
-    def valid_options_for_tier(self, card: CardState, tier: str) -> List[Dict[str, Any]]:
-        """주어진 카드 상태에서 해당 `tier`에 대해 적용 가능한 옵션 리스트 반환(상태 변경 없음)."""
-        tier_cfg = self.tiers_cfg[tier]
-        options = tier_cfg.get("options", [])
-
-        def option_valid(opt: Dict[str, Any]) -> bool:
-            for eff in opt.get("effects", []):
-                et = eff.get("type")
-
-                if et == "flag.set":
-                    flag = eff.get("flag")
-                    val = bool(eff.get("value"))
-                    if val and bool(card.effects.get(flag, False)):
-                        return False
-
-                if et == "effect.set_if_none":
-                    effect = eff.get("effect")
-                    field = eff.get("field")
-                    key = f"{effect}_{field}"
-                    if card.effects.get(key, None) is not None:
-                        return False
-
-                if et == "stat.add":
-                    stat = eff.get("stat")
-                    if stat == "range":
-                        cur = safe_int(card.stats.get("range", 0))
-                        if cur >= 3:
-                            return False
-
-                if et == "effect.additive":
-                    effect = eff.get("effect")
-                    field = eff.get("field")
-                    key = f"{effect}_{field}"
-                    if effect == "draw" and field == "cards":
-                        cur = safe_float(card.effects.get(key, 0.0))
-                        if cur >= 1.0:
-                            return False
-                    if effect == "freeze" and field == "turns":
-                        cur = safe_float(card.effects.get(key, 0.0))
-                        if cur >= 3.0:
-                            return False
-            return True
-
-        valid = [o for o in options if option_valid(o)]
-        return valid if valid else options
-
-    def preview_option(self, card: CardState, tier: str, rng: Any = None) -> Optional[Dict[str, Any]]:
-        """해당 `tier`에서 카드 상태에 대해 실제 적용될(또는 적용 가능한) 옵션 하나를 샘플링하여 반환합니다.
-        상태는 변경하지 않습니다. 실패 시 None 반환.
-        """
-        if rng is None:
-            rng = random
-        opts = self.valid_options_for_tier(card, tier)
-        if not opts:
-            return None
-        return rng.choice(opts)
 
 def load_first_card(path: str = "cards.json") -> CardState:
     if not os.path.exists(path):
@@ -769,6 +540,7 @@ def load_first_card(path: str = "cards.json") -> CardState:
     base_atk = float(stats.get("attack", 0.0))
     stats.setdefault("base_attack", base_atk)
     stats.setdefault("attack_bonus_ratio", 0.0)
+    stats.setdefault("resource", 0)
     effects.setdefault("ignore_defense", False)
     effects.setdefault("double_hit", False)
     effects.setdefault("aoe_all_enemies", False)
@@ -786,6 +558,7 @@ def load_first_card(path: str = "cards.json") -> CardState:
 def describe_card(card: CardState) -> str:
     parts: List[str] = []
     eff = card.effects
+    resource = safe_int(card.stats.get("resource", 0))
     if card.type == "attack":
         base_atk = safe_float(card.stats.get("base_attack", card.stats.get("attack", 0.0)))
         bonus = safe_float(card.stats.get("attack_bonus_ratio", 0.0))
@@ -812,11 +585,11 @@ def describe_card(card: CardState) -> str:
 
     ft = safe_float(eff.get("freeze_turns", 0.0))
     if ft > 0:
-        eff_parts.append(f"빙결 {ft:g}턴")
+        eff_parts.append(f"빙결 {ft:.2f}턴")
 
     dr = safe_float(eff.get("draw_cards", 0.0))
     if dr > 0:
-        eff_parts.append(f"카드를 {dr:g}장 뽑는다")
+        eff_parts.append(f"카드를 {dr:.2f}장 뽑는다")
 
     sr = safe_float(eff.get("shield_ratio", 0.0))
     if sr > 0:
@@ -830,6 +603,9 @@ def describe_card(card: CardState) -> str:
     ar = safe_float(eff.get("armor_down_ratio", 0.0))
     if ar > 0:
         eff_parts.append(f"상대의 방어력을 {fmt_ratio_0(ar)} 감소시킨다")
+        
+    if resource > 0:
+        eff_parts.append(f"자원 +{resource}")
 
     su = eff.get("summon_unit", None)
     if su:
@@ -844,7 +620,7 @@ def describe_card(card: CardState) -> str:
     return " ".join(parts).replace("  ", " ").strip()
 
 
-STAT_LABEL = {"attack": "공격력", "range": "거리"}
+STAT_LABEL = {"attack": "공격력", "range": "거리", "resource": "자원"}
 EFFECT_LABEL = {
     "ignore_defense": "방어 무시",
     "double_hit": "공격 2회",
@@ -856,16 +632,17 @@ EFFECT_LABEL = {
     "armor_down_ratio": "방어 감소",
     "draw_cards": "드로우",
     "summon_unit": "소환",
+    "triple_attack": "3배 공격",
 }
 
 
 def format_field(key: str, v: Any) -> str:
     if key in ("shield_ratio", "bleed_ratio", "armor_down_ratio"):
-        return fmt_ratio_1(safe_float(v))
+        return fmt_ratio_2(safe_float(v))
     if key == "freeze_turns":
-        return f"{safe_float(v):g}턴"
+        return f"{safe_float(v):.2f}턴"
     if key == "draw_cards":
-        return f"{safe_float(v):g}장"
+        return f"{safe_float(v):.2f}장"
     if key == "bleed_turns":
         return f"{safe_int(v)}턴"
     return str(v)
@@ -1004,6 +781,9 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
             card = load_first_card("cards.json")
             g.reset_state()
             count = 0
+            last_result = None
+            last_before = None
+            last_after = None
             status = ""
             continue
 
@@ -1036,26 +816,32 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
                 # 가장 높은 티어(숫자 큰 것) 자동 선택
                 best_idx = max(picks)
                 chosen_idx = best_idx
+                try:
+                    sel_idx = picks.index(chosen_idx)
+                    chosen_opt = option_infos[sel_idx].get("opt")
+                except Exception:
+                    chosen_opt = None
             else:
                 # 사용자에게 3개 보여주고 선택 받기
                 print(f"\n[강화 선택지 {n_choices}개]")
                 for i, (idx, info) in enumerate(zip(picks, option_infos), start=1):
                     print(f"{i}) {TIERS_NAME[Tier(idx)]} - {info.get('display','')}")
 
-                sel = input(f"선택(1/{'/'.join(map(str, range(1, n_choices+1)))}, 엔터=1): ").strip()
-                if sel not in (str(i) for i in range(1, n_choices+1)) and sel != "":
+                choices_str = "/".join(map(str, range(1, n_choices+1)))
+                sel = input(f"선택({choices_str}, 엔터=1): ").strip()
+                if sel == "" or sel not in [str(i) for i in range(1, n_choices+1)]:
                     sel = "1"
-                if sel == "":
-                    sel = "1"
-                chosen_idx = picks[int(sel) - 1]
+                sel_idx = int(sel) - 1
+                chosen_idx = picks[sel_idx]
+                chosen_opt = option_infos[sel_idx].get("opt")
 
             # 3) 선택 확정(여기서만 pity/천장 상태 갱신)
             g.commit_choice(chosen_idx)
             tier_str = Tier(chosen_idx).name
 
-            # 4) 카드에 강화 적용
+            # 4) 카드에 강화 적용 (선택된 옵션을 전달하여 동일 옵션 적용)
             before = CardState.from_dict(card.to_dict())
-            applied = engine.apply_tier(card, tier_str, rng=random)
+            applied = engine.apply_tier(card, tier_str, rng=random, selected_option=chosen_opt)
 
             count += 1
             last_result = applied
