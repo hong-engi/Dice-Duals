@@ -338,7 +338,8 @@ class EnhanceGacha:
             # 4) 카드에 적용
             card = CardState.from_dict(card_template.to_dict())
             tier_str = Tier(chosen_idx).name
-            res = engine.apply_tier(card, tier_str, rng=random)
+            higher_exists = any(p > chosen_idx for p in picks)
+            res = engine.apply_tier(card, tier_str, rng=random, higher_tier_exists=higher_exists)
             used = res.get("tier_used", tier_str)
 
             tier_counts[chosen_idx] += 1
@@ -841,7 +842,14 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
 
             # 4) 카드에 강화 적용 (선택된 옵션을 전달하여 동일 옵션 적용)
             before = CardState.from_dict(card.to_dict())
-            applied = engine.apply_tier(card, tier_str, rng=random, selected_option=chosen_opt)
+            higher_exists = any(p > chosen_idx for p in picks)
+            applied = engine.apply_tier(
+                card,
+                tier_str,
+                rng=random,
+                selected_option=chosen_opt,
+                higher_tier_exists=higher_exists,
+            )
 
             count += 1
             last_result = applied

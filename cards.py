@@ -79,6 +79,11 @@ class EnhancementEngine:
         self.cfg = cfg
         self.tiers_cfg: Dict[str, Any] = self.cfg["tiers"]
         self.tier_names = list(self.tiers_cfg.keys())
+        proc_cfg = self.cfg.get("proc_rates", {})
+        self.proc_efficiency_base = float(proc_cfg.get("efficiency_base", 0.25))
+        self.proc_efficiency_with_higher = float(proc_cfg.get("efficiency_with_higher", 0.50))
+        self.proc_lower_base = float(proc_cfg.get("lower_base", 0.20))
+        self.proc_lower_with_higher = float(proc_cfg.get("lower_with_higher", 0.40))
         # stat/effect caps: mapping name -> (a, b, is_int)
         # a: soft cap, b: breakthrough allowance (max extra raw amount),
         # is_int: whether value should be integer
@@ -140,6 +145,31 @@ class EnhancementEngine:
         if isinstance(spec, dict) and spec.get("dist") == "uniform":
             return rng.uniform(float(spec["min"]), float(spec["max"]))
         raise ValueError(f"Unknown value spec: {spec}")
+
+    def _scale_value_spec(self, spec: Any, ratio: float) -> Any:
+        if isinstance(spec, (int, float)):
+            return float(spec) * ratio
+        if isinstance(spec, dict) and spec.get("dist") == "uniform":
+            out = dict(spec)
+            out["min"] = float(out.get("min", 0.0)) * ratio
+            out["max"] = float(out.get("max", 0.0)) * ratio
+            return out
+        return spec
+
+    def _is_efficiency_eligible(self, eff: Dict[str, Any]) -> bool:
+        et = eff.get("type")
+        if et in ("flag.set", "effect.set_if_none"):
+            return False
+        if et == "stat.add" and eff.get("stat") == "range":
+            return False
+        return "value" in eff
+
+    def _boost_effect(self, eff: Dict[str, Any], ratio: float) -> Dict[str, Any]:
+        if not self._is_efficiency_eligible(eff):
+            return eff
+        out = dict(eff)
+        out["value"] = self._scale_value_spec(out.get("value"), ratio)
+        return out
 
     def _apply_effect(self, card: CardState, eff: Dict[str, Any], rng: Any) -> None:
         et = eff["type"]
@@ -248,7 +278,15 @@ class EnhancementEngine:
 
         raise ValueError(f"Unknown effect type: {et}")
 
-    def apply_tier(self, card: CardState, tier: str, rng: Any = None, selected_option: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def apply_tier(
+        self,
+        card: CardState,
+        tier: str,
+        rng: Any = None,
+        selected_option: Optional[Dict[str, Any]] = None,
+        higher_tier_exists: bool = False,
+        enable_bonus_procs: bool = True,
+    ) -> Dict[str, Any]:
         if rng is None:
             rng = random
         card.ensure_counts(self.tier_names)
@@ -322,8 +360,22 @@ class EnhancementEngine:
         else:
             opt = rng.choice(valid if valid else options)
 
-        roll_parts = []
+        roll_parts: List[str] = []
+
+        eff_ratio = 1.5
+        eff_rate = self.proc_efficiency_with_higher if higher_tier_exists else self.proc_efficiency_base
+        lower_rate = self.proc_lower_with_higher if higher_tier_exists else self.proc_lower_base
+
+        efficiency_proc = False
+        if enable_bonus_procs:
+            has_eligible = any(self._is_efficiency_eligible(eff) for eff in opt.get("effects", []))
+            efficiency_proc = has_eligible and (rng.random() < eff_rate)
+
+        main_effects = []
         for eff in opt.get("effects", []):
+            main_effects.append(self._boost_effect(eff, eff_ratio) if efficiency_proc else eff)
+
+        for eff in main_effects:
             rolled = self._apply_effect(card, eff, rng)
             if rolled is not None:
                 roll_parts.append(rolled)
@@ -335,9 +387,34 @@ class EnhancementEngine:
         card.enhancement_counts[tier] = card.enhancement_counts.get(tier, 0) + 1
         card.enhancement_log.append({"rolled_tier": rolled_tier, "tier": tier, "option_id": opt.get("id", ""), "display": opt.get("display", "")})
 
+        lower_bonus_result: Optional[Dict[str, Any]] = None
+        if enable_bonus_procs:
+            try:
+                tier_idx = self.tier_names.index(tier)
+            except ValueError:
+                tier_idx = -1
+            if tier_idx > 0 and (rng.random() < lower_rate):
+                lower_tier = self.tier_names[tier_idx - 1]
+                lower_bonus_result = self.apply_tier(
+                    card,
+                    lower_tier,
+                    rng=rng,
+                    selected_option=None,
+                    higher_tier_exists=False,
+                    enable_bonus_procs=False,
+                )
+
         roll_text = ""
-        if roll_parts:
-            roll_text = " [" + ", ".join(roll_parts) + "]"
+        extra_parts = []
+        if efficiency_proc:
+            extra_parts.append("효율증폭 x1.5")
+        if lower_bonus_result is not None:
+            extra_parts.append(
+                f"하위 보너스 {lower_bonus_result['tier_used']}:{lower_bonus_result['display']}{lower_bonus_result.get('roll_text', '')}"
+            )
+        all_parts = roll_parts + extra_parts
+        if all_parts:
+            roll_text = " [" + ", ".join(all_parts) + "]"
 
         return {
             "rolled_tier": rolled_tier,
@@ -345,6 +422,9 @@ class EnhancementEngine:
             "option_id": opt.get("id", ""),
             "display": opt.get("display", opt.get("id", "")),
             "roll_text": roll_text,
+            "efficiency_proc": efficiency_proc,
+            "lower_bonus_proc": lower_bonus_result is not None,
+            "lower_bonus_result": lower_bonus_result,
         }
 
     def valid_options_for_tier(self, card: CardState, tier: str) -> List[Dict[str, Any]]:
