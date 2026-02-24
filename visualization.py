@@ -11,7 +11,7 @@ button_rect = pg.Rect(10, 600, 200, 50) # x, y, width, height
 
 def draw_button(screen, rect, text, is_hovered, is_clicked):
     color = DARK_GRAY if is_clicked else GRAY
-    rect = pg.Rect(rect).inflate(10, 10) if is_hovered else pg.Rect(rect)
+    rect = pg.Rect(rect).inflate(10, 10) if is_hovered or is_clicked else pg.Rect(rect)
     pg.draw.rect(screen, color, rect)
     text_surf = font.render(text, True, BLACK)
     text_rect = text_surf.get_rect(center=rect.center)
