@@ -91,7 +91,7 @@ class EnhanceGacha:
         if len(self.caps) != len(Tier):
             raise ValueError("caps 길이는 Tier와 같아야 합니다.")
         if self.pity_strengths is None:
-            self.pity_strengths = [0.8, 1.0, 1.1, 1.3, 1.6, 1.8, 2.0]
+            self.pity_strengths = [0.5, 0.7, 2, 3, 10, 10, 10]
         if len(self.pity_strengths) != len(Tier):
             raise ValueError("pity_strengths 길이는 Tier와 같아야 합니다.")
         self.fail_counts = [0 for _ in range(len(Tier))]
@@ -211,6 +211,243 @@ class EnhanceGacha:
         else:
             print("UNIQUE가 한 번도 나오지 않았습니다.")
 
+    def batch_apply_enhancements(self, engine: "EnhancementEngine", card_template: "CardState", trials: int = 1000, seed: int = 0, reset: bool = True, show_samples: int = 0) -> None:
+        """티켓을 n번 반복하여 실제로 `engine.apply_tier`를 적용하고 결과를 집계해 출력합니다.
+
+        - `engine`: `EnhancementEngine` 인스턴스
+        - `card_template`: 각 시도에 복사해 사용할 `CardState`
+        - `trials`: 시도 횟수
+        - `seed`: 랜덤 시드
+        - `reset`: 시작 전 `fail_counts` 리셋 여부
+        - `show_samples`: 초반 샘플 출력 수
+        """
+        random.seed(seed)
+        if reset:
+            self.reset_state()
+
+        tier_counts = Counter()
+        forced_counts = Counter()
+        applied_counts = Counter()
+        unique_gaps = []
+        since_unique = 0
+        sample_lines = []
+
+        for t in range(1, trials + 1):
+            probs = self._adjusted_probs()
+            forced = self._forced_min_tier()
+            idx, _ = self.roll_with_probs(probs)
+
+            # 각 시도마다 카드 템플릿을 복사해서 실제로 효과를 적용
+            card = CardState.from_dict(card_template.to_dict())
+            before = CardState.from_dict(card.to_dict())
+            tier_str = Tier(idx).name
+            res = engine.apply_tier(card, tier_str, rng=random)
+            used = res.get("tier_used", tier_str)
+
+            tier_counts[idx] += 1
+            applied_counts[used] += 1
+            if forced >= 0:
+                forced_counts[forced] += 1
+
+            since_unique += 1
+            if used == Tier.UNIQUE.name:
+                unique_gaps.append(since_unique)
+                since_unique = 0
+
+            if show_samples > 0 and t <= show_samples:
+                forced_name = TIERS_NAME[Tier(forced)] if forced >= 0 else "없음"
+                sample_lines.append(
+                    f"{t:04d}회차: 뽑힘={TIERS_NAME[Tier(idx)]:10s} | 적용={TIERS_NAME[Tier[used]]:10s} | 천장강제={forced_name}"
+                )
+
+        print(f"=== 배치 강화 결과: trials={trials}, seed={seed}, reset={reset} ===")
+        if sample_lines:
+            print("\n--- 샘플(초반) ---")
+            for line in sample_lines:
+                print(line)
+
+        print("\n--- 뽑힌 티어 분포(뽑힘 기준) ---")
+        for i in range(len(Tier)):
+            c = tier_counts[i]
+            pctv = c / trials * 100.0
+            print(f"{TIERS_NAME[Tier(i)]:10s}: {c:4d}회 ({pctv:6.2f}%)")
+
+        print("\n--- 적용된 티어 분포(실제 적용된 기준) ---")
+        total_applied = sum(applied_counts.values())
+        for name, c in sorted(applied_counts.items(), key=lambda x: Tier[x[0]].value if x[0] in Tier.__members__ else -1):
+            pctv = c / trials * 100.0
+            try:
+                enum_val = Tier[name]
+                label = TIERS_NAME[enum_val]
+            except Exception:
+                label = name
+            print(f"{label:10s}: {c:4d}회 ({pctv:6.2f}%)")
+
+        print("\n--- 천장(강제 최소 티어) 발동 ---")
+        total_forced = sum(forced_counts.values())
+        print(f"천장 발동 총합: {total_forced}회 ({total_forced / trials * 100:.2f}%)")
+        if total_forced > 0:
+            for i in range(len(Tier)):
+                if i in forced_counts:
+                    c = forced_counts[i]
+                    pctv = c / trials * 100.0
+                    print(f"  {TIERS_NAME[Tier(i)]:10s} 강제: {c:4d}회 ({pctv:6.2f}%)")
+
+        print("\n--- UNIQUE 통계 ---")
+        unique_count = applied_counts.get(Tier.UNIQUE.name, 0)
+        print(f"UNIQUE 횟수: {unique_count}회 ({unique_count / trials * 100:.2f}%)")
+        if unique_gaps:
+            avg_gap = sum(unique_gaps) / len(unique_gaps)
+            max_gap = max(unique_gaps)
+            print(f"UNIQUE 등장 간격: 평균 {avg_gap:.2f}회, 최대 {max_gap}회")
+        else:
+            print("UNIQUE가 한 번도 나오지 않았습니다.")
+
+    def batch_apply_enhancements_choice_max(
+        self,
+        engine: "EnhancementEngine",
+        card_template: "CardState",
+        trials: int = 1000,
+        seed: int = 0,
+        reset: bool = True,
+        show_samples: int = 0,
+        n_choices: int = 3,
+    ) -> None:
+        random.seed(seed)
+        if reset:
+            self.reset_state()
+
+        tier_counts = Counter()       # '제시 후보 중 선택된(=최종)' 티어 인덱스 분포
+        forced_counts = Counter()
+        applied_counts = Counter()
+        sample_lines = []
+
+        for t in range(1, trials + 1):
+            forced = self._forced_min_tier()
+
+            # 1) 후보 n개 미리보기(상태 변화 없음)
+            picks, option_infos = self.preview_choices(engine, card_template, n_choices)
+
+            # 2) 최댓값 선택
+            chosen_idx = max(picks)
+
+            # 3) 선택 확정(여기서만 pity/천장 상태 갱신)
+            self.commit_choice(chosen_idx)
+
+            # 4) 카드에 적용
+            card = CardState.from_dict(card_template.to_dict())
+            tier_str = Tier(chosen_idx).name
+            res = engine.apply_tier(card, tier_str, rng=random)
+            used = res.get("tier_used", tier_str)
+
+            tier_counts[chosen_idx] += 1
+            applied_counts[used] += 1
+            if forced >= 0:
+                forced_counts[forced] += 1
+
+            if show_samples > 0 and t <= show_samples:
+                forced_name = TIERS_NAME[Tier(forced)] if forced >= 0 else "없음"
+                candidate_strs = [f"{TIERS_NAME[Tier(info['tier'])]}:{info['display']}" for info in option_infos]
+                sample_lines.append(
+                    f"{t:04d}회차: 후보={candidate_strs} | 선택={TIERS_NAME[Tier(chosen_idx)]} | 적용={TIERS_NAME[Tier[used]]} | 천장강제={forced_name}"
+                )
+
+        print(f"=== 배치(후보 {n_choices}개 중 최고 선택) 결과: trials={trials}, seed={seed}, reset={reset} ===")
+        if sample_lines:
+            print("\n--- 샘플(초반) ---")
+            for line in sample_lines:
+                print(line)
+
+        print("\n--- 최종 선택 티어 분포(선택된 idx 기준) ---")
+        for i in range(len(Tier)):
+            c = tier_counts[i]
+            pctv = c / trials * 100.0
+            print(f"{TIERS_NAME[Tier(i)]:10s}: {c:4d}회 ({pctv:6.2f}%)")
+
+        print("\n--- 적용된 티어 분포(실제 적용 기준) ---")
+        for name, c in sorted(applied_counts.items(), key=lambda x: Tier[x[0]].value if x[0] in Tier.__members__ else -1):
+            pctv = c / trials * 100.0
+            label = TIERS_NAME[Tier[name]] if name in Tier.__members__ else name
+            print(f"{label:10s}: {c:4d}회 ({pctv:6.2f}%)")
+
+        print("\n--- 천장(강제 최소 티어) 발동 ---")
+        total_forced = sum(forced_counts.values())
+        print(f"천장 발동 총합: {total_forced}회 ({total_forced / trials * 100:.2f}%)")
+        
+    def _apply_roll_to_state(self, idx: int) -> None:
+        """roll_with_probs에서 하던 fail_counts 갱신만 분리"""
+        n = len(self.base_probs)
+        for i in range(n):
+            if idx >= i:
+                self.fail_counts[i] = 0
+            else:
+                self.fail_counts[i] += 1
+
+    @staticmethod
+    def transform_probs_for_choice(probs: List[float], n_choices: int = 3) -> List[float]:
+        """
+        'n_choices개 중 하나 선택'에서 최종 선택 분포가
+        기존 단일 뽑기와 같아지도록 각 슬롯 확률을 낮추는 변환.
+        """
+        n = len(probs)
+        # 생존함수 S[i] = P(tier >= i)
+        S = [0.0] * (n + 1)
+        S[n] = 0.0
+        acc = 0.0
+        for i in range(n - 1, -1, -1):
+            acc += probs[i]
+            S[i] = acc
+
+        # 변환된 생존함수 S'
+        Sp = [0.0] * (n + 1)
+        Sp[n] = 0.0
+        inv = 1.0 / float(n_choices)
+        for i in range(n):
+            # S'_i = 1 - (1 - S_i)^(1/n)
+            x = max(0.0, min(1.0, S[i]))
+            Sp[i] = 1.0 - ((1.0 - x) ** inv)
+
+        # 티어별 확률 q[i] = S'[i] - S'[i+1]
+        q = [0.0] * n
+        for i in range(n):
+            q[i] = max(0.0, Sp[i] - Sp[i + 1])
+
+        # 정규화(부동소수 오차 방지)
+        total = sum(q)
+        if total <= 0:
+            q[0] = 1.0
+            return q
+        return [x / total for x in q]
+
+    def preview_choices(self, engine: "EnhancementEngine", card: "CardState", n_choices: int = 3) -> Tuple[List[int], List[Dict[str, Any]]]:
+        """
+        현재 상태에서 (천장/피티 반영된) 확률을 기반으로
+        '보기용' 강화 티어 n개를 뽑아주고, 각 후보에 대해
+        `engine`을 사용해 그 티어에서 선택될 "옵션"(display 및 effects)을
+        미리 샘플링해 반환합니다. 상태 업데이트는 발생하지 않습니다.
+
+        반환값: (picks, option_infos)
+          - picks: 티어 인덱스 리스트
+          - option_infos: 각 후보에 대응하는 옵션 요약(dict)
+        """
+        base = self._adjusted_probs()
+        offer_probs = self.transform_probs_for_choice(base, n_choices=n_choices)
+        picks = [self._sample_index(offer_probs) for _ in range(n_choices)]
+
+        option_infos: List[Dict[str, Any]] = []
+        for idx in picks:
+            opt = engine.preview_option(card, Tier(idx).name, rng=random)
+            if opt is None:
+                option_infos.append({"tier": idx, "display": "(옵션 없음)", "effects": []})
+            else:
+                option_infos.append({"tier": idx, "display": opt.get("display", opt.get("id", "")), "effects": opt.get("effects", [])})
+
+        return picks, option_infos
+
+    def commit_choice(self, idx: int) -> Tuple[int, str]:
+        """선택된 강화 1개를 확정(상태 업데이트)"""
+        self._apply_roll_to_state(idx)
+        return idx, TIERS_NAME[Tier(idx)]
 
 @dataclass
 class CardState:
@@ -424,6 +661,63 @@ class EnhancementEngine:
             "display": opt.get("display", opt.get("id", "")),
             "roll_text": roll_text,
         }
+
+    def valid_options_for_tier(self, card: CardState, tier: str) -> List[Dict[str, Any]]:
+        """주어진 카드 상태에서 해당 `tier`에 대해 적용 가능한 옵션 리스트 반환(상태 변경 없음)."""
+        tier_cfg = self.tiers_cfg[tier]
+        options = tier_cfg.get("options", [])
+
+        def option_valid(opt: Dict[str, Any]) -> bool:
+            for eff in opt.get("effects", []):
+                et = eff.get("type")
+
+                if et == "flag.set":
+                    flag = eff.get("flag")
+                    val = bool(eff.get("value"))
+                    if val and bool(card.effects.get(flag, False)):
+                        return False
+
+                if et == "effect.set_if_none":
+                    effect = eff.get("effect")
+                    field = eff.get("field")
+                    key = f"{effect}_{field}"
+                    if card.effects.get(key, None) is not None:
+                        return False
+
+                if et == "stat.add":
+                    stat = eff.get("stat")
+                    if stat == "range":
+                        cur = safe_int(card.stats.get("range", 0))
+                        if cur >= 3:
+                            return False
+
+                if et == "effect.additive":
+                    effect = eff.get("effect")
+                    field = eff.get("field")
+                    key = f"{effect}_{field}"
+                    if effect == "draw" and field == "cards":
+                        cur = safe_float(card.effects.get(key, 0.0))
+                        if cur >= 1.0:
+                            return False
+                    if effect == "freeze" and field == "turns":
+                        cur = safe_float(card.effects.get(key, 0.0))
+                        if cur >= 3.0:
+                            return False
+            return True
+
+        valid = [o for o in options if option_valid(o)]
+        return valid if valid else options
+
+    def preview_option(self, card: CardState, tier: str, rng: Any = None) -> Optional[Dict[str, Any]]:
+        """해당 `tier`에서 카드 상태에 대해 실제 적용될(또는 적용 가능한) 옵션 하나를 샘플링하여 반환합니다.
+        상태는 변경하지 않습니다. 실패 시 None 반환.
+        """
+        if rng is None:
+            rng = random
+        opts = self.valid_options_for_tier(card, tier)
+        if not opts:
+            return None
+        return rng.choice(opts)
 
 def load_first_card(path: str = "cards.json") -> CardState:
     if not os.path.exists(path):
@@ -646,7 +940,7 @@ def save_card(card: CardState, filename: str) -> str:
     return filename
 
 
-def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardState, seed: Optional[int] = None) -> None:
+def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardState, seed: Optional[int] = None, n_choices: int = 3) -> None:
     if seed is not None:
         random.seed(seed)
 
@@ -731,13 +1025,35 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
             status = "알 수 없는 입력"
             continue
 
-        def do_one_roll() -> None:
+        def do_one_roll(auto_pick_best: bool = False) -> None:
             nonlocal last_result, last_before, last_after, count
 
-            probs = g._adjusted_probs()
-            idx, _tier_name = g.roll_with_probs(probs)
-            tier_str = Tier(idx).name
+            # 1) 보기용 3개 뽑기(상태 변화 없음)
+            picks, option_infos = g.preview_choices(engine, card, n_choices=n_choices)
 
+            # 2) 선택
+            if auto_pick_best:
+                # 가장 높은 티어(숫자 큰 것) 자동 선택
+                best_idx = max(picks)
+                chosen_idx = best_idx
+            else:
+                # 사용자에게 3개 보여주고 선택 받기
+                print(f"\n[강화 선택지 {n_choices}개]")
+                for i, (idx, info) in enumerate(zip(picks, option_infos), start=1):
+                    print(f"{i}) {TIERS_NAME[Tier(idx)]} - {info.get('display','')}")
+
+                sel = input(f"선택(1/{'/'.join(map(str, range(1, n_choices+1)))}, 엔터=1): ").strip()
+                if sel not in (str(i) for i in range(1, n_choices+1)) and sel != "":
+                    sel = "1"
+                if sel == "":
+                    sel = "1"
+                chosen_idx = picks[int(sel) - 1]
+
+            # 3) 선택 확정(여기서만 pity/천장 상태 갱신)
+            g.commit_choice(chosen_idx)
+            tier_str = Tier(chosen_idx).name
+
+            # 4) 카드에 강화 적용
             before = CardState.from_dict(card.to_dict())
             applied = engine.apply_tier(card, tier_str, rng=random)
 
@@ -745,7 +1061,7 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
             last_result = applied
             last_before = before
             last_after = CardState.from_dict(card.to_dict())
-
+            
         if target_tier is None:
             do_one_roll()
             continue
@@ -753,7 +1069,7 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
         loops = 0
         max_loops = 10000
         while True:
-            do_one_roll()
+            do_one_roll(auto_pick_best=True)
             loops += 1
             used = last_result["tier_used"]
             if Tier[used].value >= target_tier:
@@ -762,10 +1078,14 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
             if loops >= max_loops:
                 status = f"t{target_tier}: {max_loops}번을 초과하여 중단"
                 break
+    
+    
 
 
 if __name__ == "__main__":
     engine = EnhancementEngine.load("enhancements.json")
     card = load_first_card("cards.json")
     g = EnhanceGacha()
-    interactive_session(g, engine, card)
+    interactive_session(g, engine, card, n_choices=3)
+    # g.batch_apply_enhancements(engine, card, trials=100000, reset=True)
+    # g.batch_apply_enhancements_choice_max(engine, card, trials=100000, reset=True, n_choices=3)
