@@ -107,7 +107,7 @@ class EnhanceGacha:
                 forced = max(forced, i)
         return forced
 
-    def _adjusted_probs(self) -> List[float]:
+    def _adjusted_probs(self, apply_forced_floor: bool = True) -> List[float]:
         n = len(self.base_probs)
         boosted = []
         for i, base_p in enumerate(self.base_probs):
@@ -122,7 +122,7 @@ class EnhanceGacha:
                 expo = 60
             boosted.append(base_p * math.exp(expo))
 
-        min_tier = self._forced_min_tier()
+        min_tier = self._forced_min_tier() if apply_forced_floor else -1
         if min_tier >= 0:
             for i in range(min_tier):
                 boosted[i] = 0.0
@@ -229,6 +229,10 @@ class EnhanceGacha:
         tier_counts = Counter()
         forced_counts = Counter()
         applied_counts = Counter()
+        efficiency_proc_count = 0
+        efficiency_double_proc_count = 0
+        lower_bonus_proc_count = 0
+        same_tier_bonus_proc_count = 0
         unique_gaps = []
         since_unique = 0
         sample_lines = []
@@ -244,6 +248,14 @@ class EnhanceGacha:
             tier_str = Tier(idx).name
             res = engine.apply_tier(card, tier_str, rng=random)
             used = res.get("tier_used", tier_str)
+            if res.get("efficiency_proc", False):
+                efficiency_proc_count += 1
+            if res.get("efficiency_double_proc", False):
+                efficiency_double_proc_count += 1
+            if res.get("lower_bonus_proc", False):
+                lower_bonus_proc_count += 1
+            if res.get("same_tier_bonus_proc", False):
+                same_tier_bonus_proc_count += 1
 
             tier_counts[idx] += 1
             applied_counts[used] += 1
@@ -303,6 +315,11 @@ class EnhanceGacha:
             print(f"UNIQUE 등장 간격: 평균 {avg_gap:.2f}회, 최대 {max_gap}회")
         else:
             print("UNIQUE가 한 번도 나오지 않았습니다.")
+        print("\n--- 추가 발동 통계 ---")
+        print(f"강화 효율 50% 증가 발동: {efficiency_proc_count}회 ({efficiency_proc_count / trials * 100:.2f}%)")
+        print(f"강화 효율 두 배 발동: {efficiency_double_proc_count}회 ({efficiency_double_proc_count / trials * 100:.2f}%)")
+        print(f"하위 티어 무작위 업그레이드 발동: {lower_bonus_proc_count}회 ({lower_bonus_proc_count / trials * 100:.2f}%)")
+        print(f"동일 티어 무작위 업그레이드 발동: {same_tier_bonus_proc_count}회 ({same_tier_bonus_proc_count / trials * 100:.2f}%)")
 
     def batch_apply_enhancements_choice_max(
         self,
@@ -321,6 +338,10 @@ class EnhanceGacha:
         tier_counts = Counter()       # '제시 후보 중 선택된(=최종)' 티어 인덱스 분포
         forced_counts = Counter()
         applied_counts = Counter()
+        efficiency_proc_count = 0
+        efficiency_double_proc_count = 0
+        lower_bonus_proc_count = 0
+        same_tier_bonus_proc_count = 0
         sample_lines = []
 
         for t in range(1, trials + 1):
@@ -338,9 +359,17 @@ class EnhanceGacha:
             # 4) 카드에 적용
             card = CardState.from_dict(card_template.to_dict())
             tier_str = Tier(chosen_idx).name
-            higher_exists = any(p > chosen_idx for p in picks)
-            res = engine.apply_tier(card, tier_str, rng=random, higher_tier_exists=higher_exists)
+            higher_gap = max(0, max(picks) - chosen_idx) if picks else 0
+            res = engine.apply_tier(card, tier_str, rng=random, higher_tier_gap=higher_gap)
             used = res.get("tier_used", tier_str)
+            if res.get("efficiency_proc", False):
+                efficiency_proc_count += 1
+            if res.get("efficiency_double_proc", False):
+                efficiency_double_proc_count += 1
+            if res.get("lower_bonus_proc", False):
+                lower_bonus_proc_count += 1
+            if res.get("same_tier_bonus_proc", False):
+                same_tier_bonus_proc_count += 1
 
             tier_counts[chosen_idx] += 1
             applied_counts[used] += 1
@@ -375,6 +404,11 @@ class EnhanceGacha:
         print("\n--- 천장(강제 최소 티어) 발동 ---")
         total_forced = sum(forced_counts.values())
         print(f"천장 발동 총합: {total_forced}회 ({total_forced / trials * 100:.2f}%)")
+        print("\n--- 추가 발동 통계 ---")
+        print(f"강화 효율 50% 증가 발동: {efficiency_proc_count}회 ({efficiency_proc_count / trials * 100:.2f}%)")
+        print(f"강화 효율 두 배 발동: {efficiency_double_proc_count}회 ({efficiency_double_proc_count / trials * 100:.2f}%)")
+        print(f"하위 티어 무작위 업그레이드 발동: {lower_bonus_proc_count}회 ({lower_bonus_proc_count / trials * 100:.2f}%)")
+        print(f"동일 티어 무작위 업그레이드 발동: {same_tier_bonus_proc_count}회 ({same_tier_bonus_proc_count / trials * 100:.2f}%)")
         
     def _apply_roll_to_state(self, idx: int) -> None:
         """roll_with_probs에서 하던 fail_counts 갱신만 분리"""
@@ -432,9 +466,17 @@ class EnhanceGacha:
           - picks: 티어 인덱스 리스트
           - option_infos: 각 후보에 대응하는 옵션 요약(dict)
         """
-        base = self._adjusted_probs()
-        offer_probs = self.transform_probs_for_choice(base, n_choices=n_choices)
-        picks = [self._sample_index(offer_probs) for _ in range(n_choices)]
+        forced = self._forced_min_tier()
+        # 기본적으로는 강제 최소 티어를 적용하지 않은 분포로 후보를 생성하고,
+        # 천장이 발동 중일 때는 후보 중 1개만 강제 분포로 덮어써서 보장한다.
+        base_normal = self._adjusted_probs(apply_forced_floor=False)
+        offer_probs_normal = self.transform_probs_for_choice(base_normal, n_choices=n_choices)
+        picks = [self._sample_index(offer_probs_normal) for _ in range(n_choices)]
+        if forced >= 0 and n_choices > 0:
+            base_forced = self._adjusted_probs(apply_forced_floor=True)
+            offer_probs_forced = self.transform_probs_for_choice(base_forced, n_choices=n_choices)
+            forced_slot = random.randrange(n_choices)
+            picks[forced_slot] = self._sample_index(offer_probs_forced)
 
         option_infos: List[Dict[str, Any]] = []
         for idx in picks:
@@ -691,6 +733,47 @@ def diff_card(before: CardState, after: CardState) -> List[str]:
     return lines
 
 
+def compact_option_text(text: str) -> str:
+    s = (text or "").strip()
+    if s.startswith("공격력이 "):
+        s = "공격력 " + s[len("공격력이 "):]
+    if " 강화된다" in s:
+        s = s.replace(" 강화된다", " 강화")
+    return s
+
+
+def format_extra_effects(result: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    if result.get("efficiency_proc", False):
+        parts.append("강화 효율 50% 증가")
+    if result.get("efficiency_double_proc", False):
+        parts.append("강화 효율 두 배")
+    if result.get("lower_bonus_proc", False):
+        parts.append("하위 티어 무작위 업그레이드")
+    if result.get("same_tier_bonus_proc", False):
+        parts.append("동일 티어 무작위 업그레이드")
+    return " + ".join(parts)
+
+
+def format_applied_option(result: Dict[str, Any]) -> str:
+    base = compact_option_text(result.get("display_applied", result.get("display", "")))
+    parts = [base] if base else []
+
+    lower = result.get("lower_bonus_result")
+    if isinstance(lower, dict):
+        lower_text = compact_option_text(lower.get("display_applied", lower.get("display", "")))
+        if lower_text:
+            parts.append(f"하위 티어 {lower_text}")
+
+    same = result.get("same_tier_bonus_result")
+    if isinstance(same, dict):
+        same_text = compact_option_text(same.get("display_applied", same.get("display", "")))
+        if same_text:
+            parts.append(same_text)
+
+    return " + ".join(parts)
+
+
 def probs_block(probs: List[float]) -> str:
     rows = []
     for i in range(len(Tier)):
@@ -749,7 +832,11 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
                 print(f"뽑힌 강화: {rolled_name}")
             else:
                 print(f"뽑힌 강화: {rolled_name} -> 적용: {used_name}")
-            print(f"적용 옵션: {last_result['display']}{last_result.get('roll_text','')}")
+            extra_effects = format_extra_effects(last_result)
+            if extra_effects:
+                print(f"추가 효과: {extra_effects}")
+            applied_text = format_applied_option(last_result)
+            print(f"적용 옵션: {applied_text}")
             print("\n[이전 카드]")
             print(describe_card(last_before))
             print("\n[이후 카드]")
@@ -767,7 +854,7 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
         forced = g._forced_min_tier()
         forced_name = TIERS_NAME[Tier(forced)] if forced >= 0 else "없음"
 
-        print("\n천장 강제 최소 티어:", forced_name)
+        print("\n천장 티어:", forced_name)
         print("\n[현재 강화 확률]")
         print(probs_block(probs))
         
@@ -811,30 +898,80 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
 
             # 1) 보기용 3개 뽑기(상태 변화 없음)
             picks, option_infos = g.preview_choices(engine, card, n_choices=n_choices)
+            choice_plans: List[Dict[str, Any]] = []
+            for idx, info in zip(picks, option_infos):
+                planned_opt = info.get("opt")
+                higher_gap_for_choice = max(0, max(picks) - idx) if picks else 0
+                eff_rate, lower_rate, eff2_rate, same_tier_rate = engine.get_proc_rates(
+                    Tier(idx).name, higher_tier_gap=higher_gap_for_choice
+                )
+                eff_eligible = bool(planned_opt) and any(
+                    engine._is_efficiency_eligible(eff) for eff in planned_opt.get("effects", [])
+                )
+                efficiency_proc = eff_eligible and (random.random() < eff_rate)
+                efficiency_double_proc = eff_eligible and (random.random() < eff2_rate)
+                lower_bonus_proc = idx > 0 and (random.random() < lower_rate)
+                same_tier_bonus_proc = random.random() < same_tier_rate
+                if efficiency_double_proc:
+                    efficiency_proc = False
+                if same_tier_bonus_proc:
+                    lower_bonus_proc = False
+
+                preview_parts: List[str] = []
+                if efficiency_proc:
+                    preview_parts.append("x1.5")
+                if efficiency_double_proc:
+                    preview_parts.append("x2")
+                if lower_bonus_proc:
+                    preview_parts.append("하위 티어 보너스!")
+                if same_tier_bonus_proc:
+                    preview_parts.append("동일 티어 보너스!")
+                if preview_parts:
+                    preview_roll_text = " [" + "] [".join(preview_parts) + "]"
+                else:
+                    preview_roll_text = ""
+
+                choice_plans.append(
+                    {
+                        "idx": idx,
+                        "opt": planned_opt,
+                        "higher_gap": higher_gap_for_choice,
+                        "display": info.get("display", ""),
+                        "efficiency_proc": efficiency_proc,
+                        "efficiency_double_proc": efficiency_double_proc,
+                        "lower_bonus_proc": lower_bonus_proc,
+                        "same_tier_bonus_proc": same_tier_bonus_proc,
+                        "preview_roll_text": preview_roll_text,
+                    }
+                )
 
             # 2) 선택
             if auto_pick_best:
                 # 가장 높은 티어(숫자 큰 것) 자동 선택
                 best_idx = max(picks)
-                chosen_idx = best_idx
+                sel_idx = picks.index(best_idx)
+                chosen_idx = choice_plans[sel_idx]["idx"]
                 try:
-                    sel_idx = picks.index(chosen_idx)
-                    chosen_opt = option_infos[sel_idx].get("opt")
+                    chosen_plan = choice_plans[sel_idx]
                 except Exception:
-                    chosen_opt = None
+                    chosen_plan = None
             else:
                 # 사용자에게 3개 보여주고 선택 받기
                 print(f"\n[강화 선택지 {n_choices}개]")
-                for i, (idx, info) in enumerate(zip(picks, option_infos), start=1):
-                    print(f"{i}) {TIERS_NAME[Tier(idx)]} - {info.get('display','')}")
+                for i, plan in enumerate(choice_plans, start=1):
+                    idx = plan["idx"]
+                    print(
+                        f"{i}) {TIERS_NAME[Tier(idx)]} - "
+                        f"{plan.get('display','')}{plan.get('preview_roll_text','')}"
+                    )
 
                 choices_str = "/".join(map(str, range(1, n_choices+1)))
                 sel = input(f"선택({choices_str}, 엔터=1): ").strip()
                 if sel == "" or sel not in [str(i) for i in range(1, n_choices+1)]:
                     sel = "1"
                 sel_idx = int(sel) - 1
-                chosen_idx = picks[sel_idx]
-                chosen_opt = option_infos[sel_idx].get("opt")
+                chosen_plan = choice_plans[sel_idx]
+                chosen_idx = chosen_plan["idx"]
 
             # 3) 선택 확정(여기서만 pity/천장 상태 갱신)
             g.commit_choice(chosen_idx)
@@ -842,13 +979,22 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
 
             # 4) 카드에 강화 적용 (선택된 옵션을 전달하여 동일 옵션 적용)
             before = CardState.from_dict(card.to_dict())
-            higher_exists = any(p > chosen_idx for p in picks)
+            chosen_opt = chosen_plan["opt"] if chosen_plan is not None else None
+            higher_gap = chosen_plan["higher_gap"] if chosen_plan is not None else (max(0, max(picks) - chosen_idx) if picks else 0)
+            forced_efficiency_proc = chosen_plan["efficiency_proc"] if chosen_plan is not None else None
+            forced_efficiency_double_proc = chosen_plan["efficiency_double_proc"] if chosen_plan is not None else None
+            forced_lower_bonus_proc = chosen_plan["lower_bonus_proc"] if chosen_plan is not None else None
+            forced_same_tier_bonus_proc = chosen_plan["same_tier_bonus_proc"] if chosen_plan is not None else None
             applied = engine.apply_tier(
                 card,
                 tier_str,
                 rng=random,
                 selected_option=chosen_opt,
-                higher_tier_exists=higher_exists,
+                higher_tier_gap=higher_gap,
+                forced_efficiency_proc=forced_efficiency_proc,
+                forced_efficiency_double_proc=forced_efficiency_double_proc,
+                forced_lower_bonus_proc=forced_lower_bonus_proc,
+                forced_same_tier_bonus_proc=forced_same_tier_bonus_proc,
             )
 
             count += 1
