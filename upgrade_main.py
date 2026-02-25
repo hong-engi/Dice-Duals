@@ -2,40 +2,20 @@ import os
 import random
 import math
 from dataclasses import dataclass
-from enum import IntEnum
 from typing import List, Tuple, Dict, Any, Optional
 from collections import Counter
 from cards import (
     CardState,
     EnhancementEngine,
+    Tier,
+    TIER_LABELS_BY_NAME,
+    TIERS_NAME,
     describe_card,
     diff_card,
     enhancement_counts_line,
     load_cards,
     save_cards,
 )
-
-
-class Tier(IntEnum):
-    COMMON = 0
-    RARE = 1
-    SPECIAL = 2
-    HEROIC = 3
-    LEGENDARY = 4
-    MYTHICAL = 5
-    UNIQUE = 6
-
-
-TIERS_NAME = {
-    Tier.COMMON: "일반적인 강화",
-    Tier.RARE: "희귀한 강화",
-    Tier.SPECIAL: "특별한 강화",
-    Tier.HEROIC: "영웅적인 강화",
-    Tier.LEGENDARY: "전설적인 강화",
-    Tier.MYTHICAL: "신화적인 강화",
-    Tier.UNIQUE: "유일한 강화",
-}
-TIER_LABELS_BY_NAME = {t.name: TIERS_NAME[t] for t in Tier}
 
 
 def clear_screen() -> None:

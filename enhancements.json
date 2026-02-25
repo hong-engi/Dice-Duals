@@ -1,5 +1,9 @@
 {
   "attack": {
+    "card_name": "기본 공격",
+    "visual": {
+      "image_path": "images/card_attack.png"
+    },
     "tiers": {
       "COMMON": {
         "unique_once": false,
@@ -480,6 +484,10 @@
     }
   },
   "defense": {
+    "card_name": "방어",
+    "visual": {
+      "image_path": "images/card_defense.png"
+    },
     "tiers": {
       "COMMON": {
         "unique_once": false,

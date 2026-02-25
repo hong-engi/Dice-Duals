@@ -6,8 +6,68 @@ import os
 import random
 import math
 import re
+import copy
+from pathlib import Path
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Any, Dict, Optional, List, Tuple
+
+
+class Tier(IntEnum):
+    COMMON = 0
+    RARE = 1
+    SPECIAL = 2
+    HEROIC = 3
+    LEGENDARY = 4
+    MYTHICAL = 5
+    UNIQUE = 6
+
+
+TIERS_NAME = {
+    Tier.COMMON: "일반적인 강화",
+    Tier.RARE: "희귀한 강화",
+    Tier.SPECIAL: "특별한 강화",
+    Tier.HEROIC: "영웅적인 강화",
+    Tier.LEGENDARY: "전설적인 강화",
+    Tier.MYTHICAL: "신화적인 강화",
+    Tier.UNIQUE: "유일한 강화",
+}
+
+TIER_LABELS_BY_NAME = {t.name: TIERS_NAME[t] for t in Tier}
+
+
+DEFAULT_SHARED_VISUAL_CONFIG: Dict[str, Any] = {
+    "frame_path": "images/card_frame.png",
+    "image_anchor": "center",
+    "image_box": {"x": 447, "y": 584, "w": 632, "h": 911},
+    "name_anchor": "center",
+    "name_box": {"x": 443, "y": 973, "w": 414, "h": 59},
+    "name_color": "#FFFFFF",
+    "name_outline_color": "#000000",
+    "name_outline_width": 2,
+    "font_path": "fonts/KERISKEDU_B.ttf",
+    "name_min_font_size": 18,
+    "name_max_font_size": 50,
+    "tier_badge": {
+        "enabled": True,
+        "anchor": "center",
+        "x": 435,
+        "y": 1090,
+        "size": 180,
+        "path_template_unique": "images/t6_{option_id}.png",
+        "path_template": "images/t{tier}.jpg",
+    },
+}
+
+
+def deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    out = copy.deepcopy(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = deep_merge_dict(out[k], v)
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
 
 
 @dataclass
@@ -47,6 +107,267 @@ class CardState:
             enhancement_counts=dict(d.get("enhancement_counts", {})),
             enhancement_log=list(d.get("enhancement_log", [])),
         )
+
+    @staticmethod
+    def _resolve_asset_path(path: str) -> Path:
+        p = Path(path)
+        if p.is_absolute():
+            return p
+        return (Path(__file__).resolve().parent / p).resolve()
+
+    def _max_enhancement_tier_index(self) -> int:
+        max_idx = -1
+        for tier_name, cnt in (self.enhancement_counts or {}).items():
+            if cnt and tier_name in Tier.__members__:
+                max_idx = max(max_idx, Tier[tier_name].value)
+        for rec in (self.enhancement_log or []):
+            if not isinstance(rec, dict):
+                continue
+            tier_name = rec.get("tier") or rec.get("tier_used")
+            if isinstance(tier_name, str) and tier_name in Tier.__members__:
+                max_idx = max(max_idx, Tier[tier_name].value)
+        return max_idx if max_idx >= 0 else Tier.COMMON.value
+
+    def _last_unique_option_id(self) -> str:
+        for rec in reversed(self.enhancement_log or []):
+            if not isinstance(rec, dict):
+                continue
+            tier_name = rec.get("tier")
+            rolled_name = rec.get("rolled_tier")
+            if tier_name == Tier.UNIQUE.name or rolled_name == Tier.UNIQUE.name:
+                oid = rec.get("option_id")
+                if isinstance(oid, str) and oid.strip():
+                    return oid.strip()
+        return ""
+
+    def _resolve_tier_badge_path(
+        self,
+        badge_cfg: Dict[str, Any],
+        tier_idx: int,
+        unique_option_id: str = "",
+    ) -> Path:
+        base_dir = Path(__file__).resolve().parent
+
+        template = str(badge_cfg.get("path_template", "images/t{tier}.jpg"))
+        candidates: List[Path] = []
+
+        # UNIQUE(t6)는 option_id별 배지를 우선 사용
+        if tier_idx == Tier.UNIQUE.value and unique_option_id:
+            unique_template = str(badge_cfg.get("path_template_unique", "images/t6_{option_id}.png"))
+            try:
+                unique_templated = unique_template.format(
+                    tier=tier_idx,
+                    t=tier_idx,
+                    option_id=unique_option_id,
+                )
+            except Exception:
+                unique_templated = unique_template
+            utp = Path(unique_templated)
+            candidates.append(utp if utp.is_absolute() else (base_dir / utp))
+
+        # 1) 설정된 템플릿 경로
+        try:
+            templated = template.format(tier=tier_idx, t=tier_idx)
+        except Exception:
+            templated = template
+        tp = Path(templated)
+        candidates.append(tp if tp.is_absolute() else (base_dir / tp))
+
+        # 2) 일반 fallback (jpg/png)
+        candidates.append(base_dir / f"images/t{tier_idx}.jpg")
+        candidates.append(base_dir / f"images/t{tier_idx}.png")
+
+        # UNIQUE(t6) 기본 fallback 지정
+        if tier_idx == Tier.UNIQUE.value:
+            candidates.append(base_dir / "images/t6_atk_300.png")
+
+        # 3) UNIQUE(t6) 등 변형 파일 fallback: t6_*.png/jpg
+        candidates.extend(sorted((base_dir / "images").glob(f"t{tier_idx}*.png")))
+        candidates.extend(sorted((base_dir / "images").glob(f"t{tier_idx}*.jpg")))
+
+        for c in candidates:
+            if c.exists():
+                return c.resolve()
+        raise FileNotFoundError(
+            f"티어 배지 이미지를 찾을 수 없습니다: tier={tier_idx}, "
+            f"template={template} (예: images/t{tier_idx}.jpg)"
+        )
+
+    @staticmethod
+    def _load_font(size: int, font_path: Optional[str] = None):
+        from PIL import ImageFont
+
+        base_dir = Path(__file__).resolve().parent
+        candidates: List[str] = []
+        if font_path:
+            fp = Path(font_path)
+            if fp.is_absolute():
+                candidates.append(str(fp))
+            else:
+                candidates.append(str((base_dir / fp).resolve()))
+                candidates.append(str(fp))
+        candidates.append(str((base_dir / "fonts" / "KERISKEDU_B.ttf").resolve()))
+        candidates.extend(
+            [
+                "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+                "/System/Library/Fonts/AppleGothic.ttf",
+                "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "C:/Windows/Fonts/malgun.ttf",
+            ]
+        )
+        for c in candidates:
+            try:
+                return ImageFont.truetype(c, size=size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    @staticmethod
+    def _fit_font(draw: Any, text: str, max_w: int, max_h: int, min_size: int, max_size: int, font_path: Optional[str]):
+        best = CardState._load_font(min_size, font_path)
+        lo, hi = min_size, max_size
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            cand = CardState._load_font(mid, font_path)
+            bbox = draw.textbbox((0, 0), text, font=cand)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            if w <= max_w and h <= max_h:
+                best = cand
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best
+
+    def render_visual(
+        self,
+        engine: "EnhancementEngine",
+        image_path: Optional[str] = None,
+        card_name: Optional[str] = None,
+    ):
+        """enhancements.json visual 설정으로 카드 이미지를 렌더링해 PIL Image를 반환한다."""
+        try:
+            from PIL import Image, ImageDraw
+        except Exception as e:
+            raise RuntimeError("Pillow가 필요합니다. `pip install pillow` 후 다시 시도하세요.") from e
+
+        visual_cfg = engine.get_visual_config(self.type)
+        if not visual_cfg:
+            raise ValueError(f"visual 설정이 없습니다: card_type={self.type}")
+
+        frame_path = visual_cfg.get("frame_path")
+        art_path = image_path or visual_cfg.get("image_path")
+        image_box = visual_cfg.get("image_box", {})
+        name_box = visual_cfg.get("name_box", {})
+        if not frame_path or not art_path:
+            raise ValueError("visual.frame_path / visual.image_path 설정이 필요합니다.")
+
+        def _to_topleft(box: Dict[str, Any], default_anchor: str) -> Tuple[int, int, int, int]:
+            x = int(box.get("x", 0))
+            y = int(box.get("y", 0))
+            w = int(box.get("w", 0))
+            h = int(box.get("h", 0))
+            anchor = str(box.get("anchor", default_anchor)).strip().lower()
+            if anchor in ("center", "centre", "c"):
+                x = x - (w // 2)
+                y = y - (h // 2)
+            elif anchor in ("topleft", "top_left", "left_top", "lt"):
+                pass
+            else:
+                raise ValueError(f"지원하지 않는 anchor: {anchor}")
+            return x, y, w, h
+
+        image_anchor = str(visual_cfg.get("image_anchor", "topleft"))
+        name_anchor = str(visual_cfg.get("name_anchor", "topleft"))
+        ix, iy, iw, ih = _to_topleft(image_box, image_anchor)
+        nx, ny, nw, nh = _to_topleft(name_box, name_anchor)
+        if iw <= 0 or ih <= 0 or nw <= 0 or nh <= 0:
+            raise ValueError("visual.image_box / visual.name_box의 크기(w,h)는 1 이상이어야 합니다.")
+
+        frame_abs = self._resolve_asset_path(str(frame_path))
+        art_abs = self._resolve_asset_path(str(art_path))
+        if not frame_abs.exists():
+            raise FileNotFoundError(f"frame 이미지가 없습니다: {frame_abs}")
+        if not art_abs.exists():
+            raise FileNotFoundError(f"card 이미지가 없습니다: {art_abs}")
+
+        frame = Image.open(frame_abs).convert("RGBA")
+        art = Image.open(art_abs).convert("RGBA").resize((iw, ih), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+        canvas.alpha_composite(art, (ix, iy))
+        canvas.alpha_composite(frame, (0, 0))
+
+        draw = ImageDraw.Draw(canvas)
+        default_name = engine.get_card_name(self.type)
+        text = (card_name or default_name or self.name or "").strip()
+        min_font = int(visual_cfg.get("name_min_font_size", 18))
+        max_font = int(visual_cfg.get("name_max_font_size", 56))
+        font_path = visual_cfg.get("font_path")
+        font = self._fit_font(draw, text, nw, nh, min_font, max_font, font_path)
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        tx = nx + (nw - tw) // 2
+        ty = ny + (nh - th) // 2
+
+        fill = visual_cfg.get("name_color", "#FFFFFF")
+        stroke_fill = visual_cfg.get("name_outline_color", "#000000")
+        stroke_width = int(visual_cfg.get("name_outline_width", 2))
+        draw.text((tx, ty), text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
+
+        badge_cfg = visual_cfg.get("tier_badge", {})
+        if isinstance(badge_cfg, dict) and badge_cfg.get("enabled", True):
+            tier_idx = self._max_enhancement_tier_index()
+            bx = int(badge_cfg.get("x", 0))
+            by = int(badge_cfg.get("y", 0))
+            bsize = int(badge_cfg.get("size", 130))
+            bw = int(badge_cfg.get("w", bsize))
+            bh = int(badge_cfg.get("h", bsize))
+            if bw > 0 and bh > 0:
+                anchor = str(badge_cfg.get("anchor", "center")).strip().lower()
+                if anchor in ("center", "centre", "c"):
+                    bx = bx - (bw // 2)
+                    by = by - (bh // 2)
+                elif anchor not in ("topleft", "top_left", "left_top", "lt"):
+                    raise ValueError(f"지원하지 않는 tier_badge.anchor: {anchor}")
+                unique_option_id = self._last_unique_option_id() if tier_idx == Tier.UNIQUE.value else ""
+                badge_path = self._resolve_tier_badge_path(
+                    badge_cfg,
+                    tier_idx,
+                    unique_option_id=unique_option_id,
+                )
+                badge = Image.open(badge_path).convert("RGBA").resize((bw, bh), Image.Resampling.LANCZOS)
+                canvas.alpha_composite(badge, (bx, by))
+
+        return canvas
+
+    def visualize(
+        self,
+        engine: "EnhancementEngine",
+        output_path: Optional[str] = None,
+        image_path: Optional[str] = None,
+        card_name: Optional[str] = None,
+    ) -> str:
+        """카드 이미지를 렌더링 후 파일로 저장하고 경로를 반환한다."""
+        frame = self.render_visual(engine=engine, image_path=image_path, card_name=card_name)
+        if output_path is None:
+            output_path = str((Path(__file__).resolve().parent / "images" / f"preview_{self.id}.png").resolve())
+        out_abs = self._resolve_asset_path(output_path)
+        out_abs.parent.mkdir(parents=True, exist_ok=True)
+        frame.save(out_abs)
+        return str(out_abs)
+
+    def show_visual(
+        self,
+        engine: "EnhancementEngine",
+        image_path: Optional[str] = None,
+        card_name: Optional[str] = None,
+    ) -> None:
+        """카드 이미지를 렌더링해 기본 이미지 뷰어로 표시한다."""
+        frame = self.render_visual(engine=engine, image_path=image_path, card_name=card_name)
+        frame.show()
 
 
 # small helpers used by engine (kept local to avoid depending on main.py)
@@ -156,6 +477,22 @@ class EnhancementEngine:
         if not isinstance(options, list):
             return []
         return list(options)
+
+    def get_visual_config(self, card_type: str) -> Dict[str, Any]:
+        c = self.card_types_cfg.get(card_type)
+        if not isinstance(c, dict):
+            return copy.deepcopy(DEFAULT_SHARED_VISUAL_CONFIG)
+        visual_override = c.get("visual", {})
+        if not isinstance(visual_override, dict):
+            visual_override = {}
+        return deep_merge_dict(DEFAULT_SHARED_VISUAL_CONFIG, visual_override)
+
+    def get_card_name(self, card_type: str) -> str:
+        c = self.card_types_cfg.get(card_type)
+        if not isinstance(c, dict):
+            return ""
+        name = c.get("card_name", "")
+        return str(name).strip() if name is not None else ""
 
     def get_proc_rates(
         self, tier: str, higher_tier_gap: int = 0, higher_tier_exists: bool = False
@@ -725,7 +1062,7 @@ def ensure_json_ext(name: str) -> str:
 def _default_base_attack_card(card_no: int) -> Dict[str, Any]:
     return {
         "id": f"atk_{card_no:03d}",
-        "name": f"기본 공격 {card_no}",
+        "name": "기본 공격",
         "type": "attack",
         "stats": {"attack": 100, "range": 1},
         "effects": {

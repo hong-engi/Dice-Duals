@@ -2,7 +2,7 @@
   "cards": [
     {
       "id": "atk_001",
-      "name": "기본 공격 1",
+      "name": "기본 공격",
       "type": "attack",
       "stats": {
         "attack": 100,
