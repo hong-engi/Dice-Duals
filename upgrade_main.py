@@ -1,13 +1,19 @@
 import os
-import json
-import copy
 import random
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import List, Tuple, Dict, Any, Optional
 from collections import Counter
-from cards import EnhancementEngine
+from cards import (
+    CardState,
+    EnhancementEngine,
+    describe_card,
+    diff_card,
+    enhancement_counts_line,
+    load_cards,
+    save_cards,
+)
 
 
 class Tier(IntEnum):
@@ -29,45 +35,15 @@ TIERS_NAME = {
     Tier.MYTHICAL: "신화적인 강화",
     Tier.UNIQUE: "유일한 강화",
 }
+TIER_LABELS_BY_NAME = {t.name: TIERS_NAME[t] for t in Tier}
 
 
 def clear_screen() -> None:
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def ensure_json_ext(name: str) -> str:
-    name = name.strip()
-    if not name:
-        return ""
-    if not name.lower().endswith(".json"):
-        name += ".json"
-    return name
-
-
 def pct(x: float) -> str:
     return f"{x*100:.3f}%"
-
-
-def fmt_ratio_0(x: float) -> str:
-    return f"{x*100:.0f}%"
-
-
-def fmt_ratio_2(x: float) -> str:
-    return f"{x*100:.2f}%"
-
-
-def safe_float(v: Any, default: float = 0.0) -> float:
-    try:
-        return float(v)
-    except Exception:
-        return default
-
-
-def safe_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(v)
-    except Exception:
-        return default
 
 
 @dataclass
@@ -455,6 +431,19 @@ class EnhanceGacha:
             return q
         return [x / total for x in q]
 
+    def preview_choice_tiers(self, n_choices: int = 3) -> List[int]:
+        """현재 피티/천장 상태에서 선택지용 티어 인덱스 n개를 샘플링(상태 변화 없음)."""
+        forced = self._forced_min_tier()
+        base_normal = self._adjusted_probs(apply_forced_floor=False)
+        offer_probs_normal = self.transform_probs_for_choice(base_normal, n_choices=n_choices)
+        picks = [self._sample_index(offer_probs_normal) for _ in range(n_choices)]
+        if forced >= 0 and n_choices > 0:
+            base_forced = self._adjusted_probs(apply_forced_floor=True)
+            offer_probs_forced = self.transform_probs_for_choice(base_forced, n_choices=n_choices)
+            forced_slot = random.randrange(n_choices)
+            picks[forced_slot] = self._sample_index(offer_probs_forced)
+        return picks
+
     def preview_choices(self, engine: "EnhancementEngine", card: "CardState", n_choices: int = 3) -> Tuple[List[int], List[Dict[str, Any]]]:
         """
         현재 상태에서 (천장/피티 반영된) 확률을 기반으로
@@ -466,17 +455,7 @@ class EnhanceGacha:
           - picks: 티어 인덱스 리스트
           - option_infos: 각 후보에 대응하는 옵션 요약(dict)
         """
-        forced = self._forced_min_tier()
-        # 기본적으로는 강제 최소 티어를 적용하지 않은 분포로 후보를 생성하고,
-        # 천장이 발동 중일 때는 후보 중 1개만 강제 분포로 덮어써서 보장한다.
-        base_normal = self._adjusted_probs(apply_forced_floor=False)
-        offer_probs_normal = self.transform_probs_for_choice(base_normal, n_choices=n_choices)
-        picks = [self._sample_index(offer_probs_normal) for _ in range(n_choices)]
-        if forced >= 0 and n_choices > 0:
-            base_forced = self._adjusted_probs(apply_forced_floor=True)
-            offer_probs_forced = self.transform_probs_for_choice(base_forced, n_choices=n_choices)
-            forced_slot = random.randrange(n_choices)
-            picks[forced_slot] = self._sample_index(offer_probs_forced)
+        picks = self.preview_choice_tiers(n_choices=n_choices)
 
         option_infos: List[Dict[str, Any]] = []
         for idx in picks:
@@ -495,242 +474,6 @@ class EnhanceGacha:
         """선택된 강화 1개를 확정(상태 업데이트)"""
         self._apply_roll_to_state(idx)
         return idx, TIERS_NAME[Tier(idx)]
-
-@dataclass
-class CardState:
-    id: str
-    name: str
-    type: str
-    stats: Dict[str, Any]
-    effects: Dict[str, Any]
-    enhancement_counts: Dict[str, int] = field(default_factory=dict)
-    enhancement_log: List[Dict[str, Any]] = field(default_factory=list)
-
-    def ensure_counts(self, tier_names: List[str]) -> None:
-        for t in tier_names:
-            self.enhancement_counts.setdefault(t, 0)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "type": self.type,
-            "stats": self.stats,
-            "effects": self.effects,
-            "enhancement_counts": self.enhancement_counts,
-            "enhancement_log": self.enhancement_log,
-        }
-
-    @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "CardState":
-        return CardState(
-            id=d["id"],
-            name=d["name"],
-            type=d.get("type", "attack"),
-            stats=dict(d.get("stats", {})),
-            effects=dict(d.get("effects", {})),
-            enhancement_counts=dict(d.get("enhancement_counts", {})),
-            enhancement_log=list(d.get("enhancement_log", [])),
-        )
-
-def load_first_card(path: str = "cards.json") -> CardState:
-    if not os.path.exists(path):
-        data = {
-            "cards": [
-                {
-                    "id": "atk_001",
-                    "name": "기본 공격",
-                    "type": "attack",
-                    "stats": {"attack": 100, "range": 1},
-                    "effects": {
-                        "ignore_defense": False,
-                        "double_hit": False,
-                        "aoe_all_enemies": False,
-                        "triple_attack": False,
-                        "freeze_turns": 0.0,
-                        "shield_ratio": 0.0,
-                        "bleed_ratio": 0.0,
-                        "bleed_turns": 0,
-                        "armor_down_ratio": 0.0,
-                        "draw_cards": 0.0,
-                        "summon_unit": None
-                    }
-                }
-            ]
-        }
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    cards = data.get("cards", [])
-    if not cards:
-        raise ValueError("cards.json에 cards가 없습니다.")
-
-    cd = cards[0]
-    cid = cd["id"]
-    name = cd.get("name", cid)
-    ctype = cd.get("type", "attack")
-
-    stats = cd.get("stats")
-    if stats is None:
-        stats = {"attack": cd.get("attack", 0), "range": cd.get("range", 0)}
-    stats = dict(stats)
-
-    effects = dict(cd.get("effects", {}) or {})
-
-    base_atk = float(stats.get("attack", 0.0))
-    stats.setdefault("base_attack", base_atk)
-    stats.setdefault("attack_bonus_ratio", 0.0)
-    stats.setdefault("resource", 0)
-    effects.setdefault("ignore_defense", False)
-    effects.setdefault("double_hit", False)
-    effects.setdefault("aoe_all_enemies", False)
-    effects.setdefault("freeze_turns", 0.0)
-    effects.setdefault("shield_ratio", 0.0)
-    effects.setdefault("bleed_ratio", 0.0)
-    effects.setdefault("bleed_turns", 0)
-    effects.setdefault("armor_down_ratio", 0.0)
-    effects.setdefault("draw_cards", 0.0)
-    effects.setdefault("summon_unit", None)
-    effects.setdefault("triple_attack", False)
-
-    return CardState(id=cid, name=name, type=ctype, stats=stats, effects=effects)
-
-def describe_card(card: CardState) -> str:
-    parts: List[str] = []
-    eff = card.effects
-    resource = safe_int(card.stats.get("resource", 0))
-    if card.type == "attack":
-        base_atk = safe_float(card.stats.get("base_attack", card.stats.get("attack", 0.0)))
-        bonus = safe_float(card.stats.get("attack_bonus_ratio", 0.0))
-        atk = base_atk * (1.0 + bonus)
-        rngv = safe_int(card.stats.get("range", 0))
-        if bool(eff.get("triple_attack", False)):
-            parts.append(f"피해를 {atk:.1f} * 3 = {atk * 3:.1f} 줍니다.")
-        else:
-            parts.append(f"피해를 {atk:.1f} 줍니다.")
-        parts.append(f"거리({rngv})")
-    else:
-        parts.append(f"{card.name}")
-
-    eff_parts: List[str] = []
-
-    if bool(eff.get("ignore_defense", False)):
-        eff_parts.append("방어를 무시한다")
-    if bool(eff.get("double_hit", False)):
-        eff_parts.append("공격이 두 번 적용된다")
-    if bool(eff.get("aoe_all_enemies", False)):
-        eff_parts.append("모든 적에게 피해를 입힌다")
-    if bool(eff.get("triple_attack", False)):
-        eff_parts.append("전체 공격력이 300% 강화된다")
-
-    ft = safe_float(eff.get("freeze_turns", 0.0))
-    if ft > 0:
-        eff_parts.append(f"빙결 {ft:.2f}턴")
-
-    dr = safe_float(eff.get("draw_cards", 0.0))
-    if dr > 0:
-        eff_parts.append(f"카드를 {dr:.2f}장 뽑는다")
-
-    sr = safe_float(eff.get("shield_ratio", 0.0))
-    if sr > 0:
-        eff_parts.append(f"피해량의 {fmt_ratio_0(sr)}만큼 보호막을 얻는다")
-
-    br = safe_float(eff.get("bleed_ratio", 0.0))
-    bt = safe_int(eff.get("bleed_turns", 0))
-    if br > 0 and bt > 0:
-        eff_parts.append(f"출혈(공격력의 {fmt_ratio_0(br)}) {bt}턴")
-
-    ar = safe_float(eff.get("armor_down_ratio", 0.0))
-    if ar > 0:
-        eff_parts.append(f"상대의 방어력을 {fmt_ratio_0(ar)} 감소시킨다")
-        
-    if resource > 0:
-        eff_parts.append(f"자원 +{resource}")
-
-    su = eff.get("summon_unit", None)
-    if su:
-        if su == "wolf":
-            eff_parts.append("늑대를 소환한다")
-        else:
-            eff_parts.append(f"{su}을(를) 소환한다")
-
-    if eff_parts:
-        parts.append("/ " + " / ".join(eff_parts))
-
-    return " ".join(parts).replace("  ", " ").strip()
-
-
-STAT_LABEL = {"attack": "공격력", "range": "거리", "resource": "자원"}
-EFFECT_LABEL = {
-    "ignore_defense": "방어 무시",
-    "double_hit": "공격 2회",
-    "aoe_all_enemies": "전체 공격",
-    "freeze_turns": "빙결",
-    "shield_ratio": "보호막 비율",
-    "bleed_ratio": "출혈 비율",
-    "bleed_turns": "출혈 턴",
-    "armor_down_ratio": "방어 감소",
-    "draw_cards": "드로우",
-    "summon_unit": "소환",
-    "triple_attack": "3배 공격",
-}
-
-
-def format_field(key: str, v: Any) -> str:
-    if key in ("shield_ratio", "bleed_ratio", "armor_down_ratio"):
-        return fmt_ratio_2(safe_float(v))
-    if key == "freeze_turns":
-        return f"{safe_float(v):.2f}턴"
-    if key == "draw_cards":
-        return f"{safe_float(v):.2f}장"
-    if key == "bleed_turns":
-        return f"{safe_int(v)}턴"
-    return str(v)
-
-
-def diff_card(before: CardState, after: CardState) -> List[str]:
-    def calc_attack(c: CardState) -> float:
-        base_atk = safe_float(c.stats.get("base_attack", c.stats.get("attack", 0.0)))
-        bonus = safe_float(c.stats.get("attack_bonus_ratio", 0.0))
-        return base_atk * (1.0 + bonus)
-    lines: List[str] = []
-
-    s_keys = sorted(set(before.stats.keys()) | set(after.stats.keys()))
-    for k in s_keys:
-        b = before.stats.get(k, None)
-        a = after.stats.get(k, None)
-        if b == a:
-            continue
-        label = STAT_LABEL.get(k, k)
-        if isinstance(b, (int, float)) and isinstance(a, (int, float)):
-            delta = a - b
-            if k == "attack_bonus_ratio":
-                b_atk = calc_attack(before)
-                a_atk = calc_attack(after)
-                if b_atk == a_atk:
-                    continue
-                delta = a_atk - b_atk
-                lines.append(f"- 공격력: {b_atk:.1f} -> {a_atk:.1f} ({delta:+.1f})")
-                continue
-            else:
-                lines.append(f"- {label}: {b} -> {a} ({delta:+})")
-        else:
-            lines.append(f"- {label}: {b} -> {a}")
-
-    e_keys = sorted(set(before.effects.keys()) | set(after.effects.keys()))
-    s_keys = sorted(set(before.stats.keys()) | set(after.stats.keys()) | {"attack"})
-    for k in e_keys:
-        b = before.effects.get(k, None)
-        a = after.effects.get(k, None)
-        if b == a:
-            continue
-        label = EFFECT_LABEL.get(k, k)
-        lines.append(f"- {label}: {format_field(k, b)} -> {format_field(k, a)}")
-
-    return lines
 
 
 def compact_option_text(text: str) -> str:
@@ -782,41 +525,34 @@ def probs_block(probs: List[float]) -> str:
     return "\n".join(rows)
 
 
-def enhancement_counts_line(card: CardState) -> str:
-    items = []
-    for t in Tier:
-        name = t.name
-        c = card.enhancement_counts.get(name, 0)
-        if c:
-            items.append(f"{TIERS_NAME[t]}×{c}")
-    return ", ".join(items) if items else "없음"
-
-
-def save_card(card: CardState, filename: str) -> str:
-    filename = ensure_json_ext(filename)
-    if not filename:
-        return ""
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(card.to_dict(), f, ensure_ascii=False, indent=2)
-    return filename
-
-
-def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardState, seed: Optional[int] = None, n_choices: int = 3) -> None:
+def interactive_session(
+    g: EnhanceGacha,
+    engine: EnhancementEngine,
+    cards: List[CardState],
+    seed: Optional[int] = None,
+    n_choices: int = 3,
+) -> None:
     if seed is not None:
         random.seed(seed)
 
     last_result: Optional[Dict[str, Any]] = None
     last_before: Optional[CardState] = None
     last_after: Optional[CardState] = None
+    last_card_label: str = ""
     count = 0
     status = ""
 
     while True:
         clear_screen()
 
-        print(f"카드: {card.name} ({card.id})")
-        print(describe_card(card))
-        print(f"티어 강화 횟수: {enhancement_counts_line(card)}")
+        print(f"보유 카드 수: {len(cards)}")
+        for i, c in enumerate(cards, start=1):
+            print(f"[{i}] {c.name} ({c.id})")
+            print(f"  {describe_card(c)}")
+            print(
+                f"  티어 강화 횟수: "
+                f"{enhancement_counts_line(c, [t.name for t in Tier], TIER_LABELS_BY_NAME)}"
+            )
         if status:
             print(f"\n{status}")
         status = ""
@@ -828,6 +564,8 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
             used_name = TIERS_NAME[Tier[used]]
             print("\n" + "=" * 60)
             print(f"{count:02d}회차 결과")
+            if last_card_label:
+                print(f"대상 카드: {last_card_label}")
             if rolled == used:
                 print(f"뽑힌 강화: {rolled_name}")
             else:
@@ -858,7 +596,7 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
         print("\n[현재 강화 확률]")
         print(probs_block(probs))
         
-        print("\n엔터: 강화 1회 | tN: N티어 이상 나올 때까지 연속 강화 (예: t4) | r: 리셋| s: 저장 | q: 종료")
+        print("\n엔터: 강화 1회 | c: 카드 전체 보기 | tN: N티어 이상 나올 때까지 연속 강화 (예: t4) | r: 리셋| s: 저장 | q: 종료")
         cmd = input("> ").strip().lower()
         if cmd in ("q", "quit"):
             clear_screen()
@@ -866,19 +604,34 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
             break
 
         if cmd in ("r", "quit"):
-            card = load_first_card("cards.json")
+            cards = load_cards("cards.json")
             g.reset_state()
             count = 0
             last_result = None
             last_before = None
             last_after = None
+            last_card_label = ""
             status = ""
             continue
 
         if cmd == "s":
             name = input("저장할 파일 이름(.json 생략 가능): ").strip()
-            out = save_card(card, name)
+            out = save_cards(cards, name)
             status = f"저장 완료: {out}" if out else "저장 취소"
+            continue
+
+        if cmd == "c":
+            clear_screen()
+            print("[보유 카드 전체]\n")
+            for i, c in enumerate(cards, start=1):
+                print(f"{i}. {c.name} ({c.id})")
+                print(f"   {describe_card(c)}")
+                print(
+                    f"   티어 강화 횟수: "
+                    f"{enhancement_counts_line(c, [t.name for t in Tier], TIER_LABELS_BY_NAME)}"
+                )
+                print()
+            input("엔터를 누르면 돌아갑니다...")
             continue
 
         target_tier: Optional[int] = None
@@ -894,19 +647,37 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
             continue
 
         def do_one_roll(auto_pick_best: bool = False) -> None:
-            nonlocal last_result, last_before, last_after, count
+            nonlocal last_result, last_before, last_after, last_card_label, status, count
 
-            # 1) 보기용 3개 뽑기(상태 변화 없음)
-            picks, option_infos = g.preview_choices(engine, card, n_choices=n_choices)
+            if not cards:
+                status = "보유 카드가 없습니다."
+                return
+            slot_count = min(n_choices, len(cards))
+            if slot_count <= 0:
+                status = "보유 카드가 없습니다."
+                return
+
+            # 1) 보기용 n개 뽑기(상태 변화 없음)
+            picks = g.preview_choice_tiers(n_choices=slot_count)
+            candidate_card_indices = random.sample(range(len(cards)), k=slot_count)
             choice_plans: List[Dict[str, Any]] = []
-            for idx, info in zip(picks, option_infos):
-                planned_opt = info.get("opt")
+            for idx, cidx in zip(picks, candidate_card_indices):
+                card = cards[cidx]
+                planned_opt = engine.preview_option(card, Tier(idx).name, rng=random)
+                if planned_opt is None:
+                    disp = "(옵션 없음)"
+                    planned_effects = []
+                else:
+                    disp = planned_opt.get("display", planned_opt.get("id", ""))
+                    if planned_opt.get("max_range", False):
+                        disp = f"{disp} (max range)"
+                    planned_effects = planned_opt.get("effects", [])
                 higher_gap_for_choice = max(0, max(picks) - idx) if picks else 0
                 eff_rate, lower_rate, eff2_rate, same_tier_rate = engine.get_proc_rates(
                     Tier(idx).name, higher_tier_gap=higher_gap_for_choice
                 )
                 eff_eligible = bool(planned_opt) and any(
-                    engine._is_efficiency_eligible(eff) for eff in planned_opt.get("effects", [])
+                    engine._is_efficiency_eligible(eff) for eff in planned_effects
                 )
                 efficiency_proc = eff_eligible and (random.random() < eff_rate)
                 efficiency_double_proc = eff_eligible and (random.random() < eff2_rate)
@@ -934,9 +705,11 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
                 choice_plans.append(
                     {
                         "idx": idx,
+                        "card_idx": cidx,
+                        "card": card,
                         "opt": planned_opt,
                         "higher_gap": higher_gap_for_choice,
-                        "display": info.get("display", ""),
+                        "display": disp,
                         "efficiency_proc": efficiency_proc,
                         "efficiency_double_proc": efficiency_double_proc,
                         "lower_bonus_proc": lower_bonus_proc,
@@ -949,7 +722,8 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
             if auto_pick_best:
                 # 가장 높은 티어(숫자 큰 것) 자동 선택
                 best_idx = max(picks)
-                sel_idx = picks.index(best_idx)
+                candidate_sel = [i for i, v in enumerate(picks) if v == best_idx]
+                sel_idx = random.choice(candidate_sel)
                 chosen_idx = choice_plans[sel_idx]["idx"]
                 try:
                     chosen_plan = choice_plans[sel_idx]
@@ -957,21 +731,30 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
                     chosen_plan = None
             else:
                 # 사용자에게 3개 보여주고 선택 받기
-                print(f"\n[강화 선택지 {n_choices}개]")
+                print(f"\n[강화 선택지 {slot_count}개]")
                 for i, plan in enumerate(choice_plans, start=1):
                     idx = plan["idx"]
+                    c = plan["card"]
+                    print(f"{i}) {c.id}: {describe_card(c)}")
                     print(
-                        f"{i}) {TIERS_NAME[Tier(idx)]} - "
+                        f"   {TIERS_NAME[Tier(idx)]} - "
                         f"{plan.get('display','')}{plan.get('preview_roll_text','')}"
                     )
 
-                choices_str = "/".join(map(str, range(1, n_choices+1)))
+                choices_str = "/".join(map(str, range(1, slot_count + 1)))
                 sel = input(f"선택({choices_str}, 엔터=1): ").strip()
-                if sel == "" or sel not in [str(i) for i in range(1, n_choices+1)]:
+                if sel == "" or sel not in [str(i) for i in range(1, slot_count + 1)]:
                     sel = "1"
                 sel_idx = int(sel) - 1
                 chosen_plan = choice_plans[sel_idx]
                 chosen_idx = chosen_plan["idx"]
+
+            if chosen_plan is None:
+                status = "선택된 강화가 없습니다."
+                return
+
+            card = chosen_plan["card"]
+            last_card_label = f"{card.name} ({card.id})"
 
             # 3) 선택 확정(여기서만 pity/천장 상태 갱신)
             g.commit_choice(chosen_idx)
@@ -1024,8 +807,8 @@ def interactive_session(g: EnhanceGacha, engine: EnhancementEngine, card: CardSt
 
 if __name__ == "__main__":
     engine = EnhancementEngine.load("enhancements.json")
-    card = load_first_card("cards.json")
+    cards = load_cards("cards.json")
     g = EnhanceGacha()
-    interactive_session(g, engine, card, n_choices=3)
+    interactive_session(g, engine, cards, n_choices=3)
     # g.batch_apply_enhancements(engine, card, trials=100000, reset=True)
     # g.batch_apply_enhancements_choice_max(engine, card, trials=100000, reset=True, n_choices=3)

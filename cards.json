@@ -2,7 +2,7 @@
   "cards": [
     {
       "id": "atk_001",
-      "name": "기본 공격",
+      "name": "기본 공격 1",
       "type": "attack",
       "stats": {
         "attack": 100,
@@ -18,6 +18,75 @@
         "bleed_turns": 0,
         "armor_down_ratio": 0.0,
         "draw_cards": 0.0,
+        "summon_unit": null
+      }
+    },
+    {
+      "id": "atk_002",
+      "name": "기본 공격 2",
+      "type": "attack",
+      "stats": {
+        "attack": 100,
+        "range": 1
+      },
+      "effects": {
+        "ignore_defense": false,
+        "double_hit": false,
+        "aoe_all_enemies": false,
+        "freeze_turns": 0.0,
+        "shield_ratio": 0.0,
+        "bleed_ratio": 0.0,
+        "bleed_turns": 0,
+        "armor_down_ratio": 0.0,
+        "draw_cards": 0.0,
+        "summon_unit": null
+      }
+    },
+    {
+      "id": "atk_003",
+      "name": "기본 공격 3",
+      "type": "attack",
+      "stats": {
+        "attack": 100,
+        "range": 1
+      },
+      "effects": {
+        "ignore_defense": false,
+        "double_hit": false,
+        "aoe_all_enemies": false,
+        "freeze_turns": 0.0,
+        "shield_ratio": 0.0,
+        "bleed_ratio": 0.0,
+        "bleed_turns": 0,
+        "armor_down_ratio": 0.0,
+        "draw_cards": 0.0,
+        "summon_unit": null
+      }
+    },
+    {
+      "id": "def_001",
+      "name": "방어",
+      "type": "defense",
+      "stats": {
+        "shield": 100
+      },
+      "effects": {
+        "ignore_defense": false,
+        "double_hit": false,
+        "aoe_all_enemies": false,
+        "freeze_turns": 0.0,
+        "shield_ratio": 0.0,
+        "bleed_ratio": 0.0,
+        "bleed_turns": 0,
+        "armor_down_ratio": 0.0,
+        "draw_cards": 0.0,
+        "temp_defense_ratio": 0.0,
+        "on_hit_freeze_turns": 0.0,
+        "next_attack_bonus_ratio": 0.0,
+        "on_hit_bleed_ratio": 0.0,
+        "on_hit_bleed_turns": 0,
+        "on_hit_draw_cards": 0.0,
+        "on_hit_frenzy_ratio": 0.0,
         "summon_unit": null
       }
     }
