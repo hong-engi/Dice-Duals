@@ -16,6 +16,7 @@ from cards import (
     load_cards,
     save_cards,
 )
+from unit import AttackProfile, DefenseProfile, Player
 
 
 def clear_screen() -> None:
@@ -468,13 +469,13 @@ def compact_option_text(text: str) -> str:
 def format_extra_effects(result: Dict[str, Any]) -> str:
     parts: List[str] = []
     if result.get("efficiency_proc", False):
-        parts.append("강화 효율 50% 증가")
+        parts.append("효율 x1.5")
     if result.get("efficiency_double_proc", False):
-        parts.append("강화 효율 두 배")
+        parts.append("효율 x2")
     if result.get("lower_bonus_proc", False):
-        parts.append("하위 티어 무작위 업그레이드")
+        parts.append("하위 티어 보너스")
     if result.get("same_tier_bonus_proc", False):
-        parts.append("동일 티어 무작위 업그레이드")
+        parts.append("동일 티어 보너스")
     return " + ".join(parts)
 
 
@@ -515,6 +516,14 @@ def interactive_session(
     if seed is not None:
         random.seed(seed)
 
+    dummy_player = Player(
+        unit_id="dummy_player",
+        name="Dummy Player",
+        max_hp=1.0,
+        hp=1.0,
+        attack=AttackProfile(power=100.0),
+        defense=DefenseProfile(armor=0.0, defense_power=100.0),
+    )
     last_result: Optional[Dict[str, Any]] = None
     last_before: Optional[CardState] = None
     last_after: Optional[CardState] = None
@@ -528,7 +537,7 @@ def interactive_session(
         print(f"보유 카드 수: {len(cards)}")
         for i, c in enumerate(cards, start=1):
             print(f"[{i}] {c.name} ({c.id})")
-            print(f"  {describe_card(c)}")
+            print(f"  {describe_card(c, dummy_player)}")
             print(
                 f"  티어 강화 횟수: "
                 f"{enhancement_counts_line(c, [t.name for t in Tier], TIER_LABELS_BY_NAME)}"
@@ -556,9 +565,9 @@ def interactive_session(
             applied_text = format_applied_option(last_result)
             print(f"적용 옵션: {applied_text}")
             print("\n[이전 카드]")
-            print(describe_card(last_before))
+            print(describe_card(last_before, dummy_player))
             print("\n[이후 카드]")
-            print(describe_card(last_after))
+            print(describe_card(last_after, dummy_player))
             changes = diff_card(last_before, last_after)
             print("\n[변화]")
             if changes:
@@ -605,7 +614,7 @@ def interactive_session(
             print("[보유 카드 전체]\n")
             for i, c in enumerate(cards, start=1):
                 print(f"{i}. {c.name} ({c.id})")
-                print(f"   {describe_card(c)}")
+                print(f"   {describe_card(c, dummy_player)}")
                 print(
                     f"   티어 강화 횟수: "
                     f"{enhancement_counts_line(c, [t.name for t in Tier], TIER_LABELS_BY_NAME)}"
@@ -632,14 +641,14 @@ def interactive_session(
             if not cards:
                 status = "보유 카드가 없습니다."
                 return
-            slot_count = min(n_choices, len(cards))
+            slot_count = n_choices
             if slot_count <= 0:
                 status = "보유 카드가 없습니다."
                 return
 
             # 1) 보기용 n개 뽑기(상태 변화 없음)
             picks = g.preview_choice_tiers(n_choices=slot_count)
-            candidate_card_indices = random.sample(range(len(cards)), k=slot_count)
+            candidate_card_indices = random.choices(range(len(cards)), k=slot_count)
             choice_plans: List[Dict[str, Any]] = []
             for idx, cidx in zip(picks, candidate_card_indices):
                 card = cards[cidx]
@@ -715,7 +724,7 @@ def interactive_session(
                 for i, plan in enumerate(choice_plans, start=1):
                     idx = plan["idx"]
                     c = plan["card"]
-                    print(f"{i}) {c.id}: {describe_card(c)}")
+                    print(f"{i}) {c.id}: {describe_card(c, dummy_player)}")
                     print(
                         f"   {TIERS_NAME[Tier(idx)]} - "
                         f"{plan.get('display','')}{plan.get('preview_roll_text','')}"
@@ -786,7 +795,7 @@ def interactive_session(
 
 
 if __name__ == "__main__":
-    engine = EnhancementEngine.load("enhancements.json")
+    engine = EnhancementEngine.load("card_definitions.json")
     cards = load_cards("cards.json")
     g = EnhanceGacha()
     interactive_session(g, engine, cards, n_choices=3)

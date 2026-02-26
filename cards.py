@@ -37,7 +37,7 @@ TIER_LABELS_BY_NAME = {t.name: TIERS_NAME[t] for t in Tier}
 
 
 DEFAULT_SHARED_VISUAL_CONFIG: Dict[str, Any] = {
-    "frame_path": "images/card_frame.png",
+    "frame_path": "images/card_images/card_frame.png",
     "image_anchor": "center",
     "image_box": {"x": 447, "y": 584, "w": 632, "h": 911},
     "name_anchor": "center",
@@ -51,11 +51,11 @@ DEFAULT_SHARED_VISUAL_CONFIG: Dict[str, Any] = {
     "tier_badge": {
         "enabled": True,
         "anchor": "center",
-        "x": 435,
+        "x": 445,
         "y": 1090,
         "size": 180,
-        "path_template_unique": "images/t6_{option_id}.png",
-        "path_template": "images/t{tier}.jpg",
+        "path_template_unique": "images/tier_icons/t6_{option_id}.png",
+        "path_template": "images/tier_icons/t{tier}.png",
     },
 }
 
@@ -84,6 +84,31 @@ class CardState:
     def ensure_counts(self, tier_names: List[str]) -> None:
         for t in tier_names:
             self.enhancement_counts.setdefault(t, 0)
+
+    def attack_ratio_value(self) -> float:
+        base = normalize_ratio_value(
+            self.stats.get("attack_ratio", self.stats.get("base_attack", self.stats.get("attack", 1.0))),
+            1.0,
+        )
+        bonus = safe_float(self.stats.get("attack_bonus_ratio", 0.0))
+        return max(0.0, base * (1.0 + bonus))
+
+    def defense_ratio_value(self) -> float:
+        base = normalize_ratio_value(
+            self.stats.get("defense_ratio", self.stats.get("base_shield", self.stats.get("shield", 1.0))),
+            1.0,
+        )
+        bonus = safe_float(self.stats.get("shield_bonus_ratio", 0.0))
+        return max(0.0, base * (1.0 + bonus))
+
+    def compute_attack_damage(self, player_attack: float) -> float:
+        dmg = max(0.0, safe_float(player_attack, 0.0)) * self.attack_ratio_value()
+        if bool(self.effects.get("triple_attack", False)):
+            dmg *= 3.0
+        return dmg
+
+    def compute_shield_amount(self, player_defense: float) -> float:
+        return max(0.0, safe_float(player_defense, 0.0)) * self.defense_ratio_value()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -132,9 +157,9 @@ class CardState:
         for rec in reversed(self.enhancement_log or []):
             if not isinstance(rec, dict):
                 continue
-            tier_name = rec.get("tier")
-            rolled_name = rec.get("rolled_tier")
-            if tier_name == Tier.UNIQUE.name or rolled_name == Tier.UNIQUE.name:
+            # overflow(rolled=UNIQUE, applied=MYTHICAL)는 UNIQUE 배지 후보에서 제외한다.
+            applied_tier = rec.get("tier") or rec.get("tier_used")
+            if applied_tier == Tier.UNIQUE.name:
                 oid = rec.get("option_id")
                 if isinstance(oid, str) and oid.strip():
                     return oid.strip()
@@ -148,12 +173,12 @@ class CardState:
     ) -> Path:
         base_dir = Path(__file__).resolve().parent
 
-        template = str(badge_cfg.get("path_template", "images/t{tier}.jpg"))
+        template = str(badge_cfg.get("path_template", "images/tier_icons/t{tier}.png"))
         candidates: List[Path] = []
 
         # UNIQUE(t6)는 option_id별 배지를 우선 사용
         if tier_idx == Tier.UNIQUE.value and unique_option_id:
-            unique_template = str(badge_cfg.get("path_template_unique", "images/t6_{option_id}.png"))
+            unique_template = str(badge_cfg.get("path_template_unique", "images/tier_icons/t6_{option_id}.png"))
             try:
                 unique_templated = unique_template.format(
                     tier=tier_idx,
@@ -173,24 +198,24 @@ class CardState:
         tp = Path(templated)
         candidates.append(tp if tp.is_absolute() else (base_dir / tp))
 
-        # 2) 일반 fallback (jpg/png)
-        candidates.append(base_dir / f"images/t{tier_idx}.jpg")
-        candidates.append(base_dir / f"images/t{tier_idx}.png")
+        # 2) 일반 fallback (png/jpg)
+        candidates.append(base_dir / "images" / "tier_icons" / f"t{tier_idx}.png")
+        candidates.append(base_dir / "images" / "tier_icons" / f"t{tier_idx}.jpg")
 
         # UNIQUE(t6) 기본 fallback 지정
         if tier_idx == Tier.UNIQUE.value:
-            candidates.append(base_dir / "images/t6_atk_300.png")
+            candidates.append(base_dir / "images" / "tier_icons" / "t6_atk_300.png")
 
         # 3) UNIQUE(t6) 등 변형 파일 fallback: t6_*.png/jpg
-        candidates.extend(sorted((base_dir / "images").glob(f"t{tier_idx}*.png")))
-        candidates.extend(sorted((base_dir / "images").glob(f"t{tier_idx}*.jpg")))
+        candidates.extend(sorted((base_dir / "images" / "tier_icons").glob(f"t{tier_idx}*.png")))
+        candidates.extend(sorted((base_dir / "images" / "tier_icons").glob(f"t{tier_idx}*.jpg")))
 
         for c in candidates:
             if c.exists():
                 return c.resolve()
         raise FileNotFoundError(
             f"티어 배지 이미지를 찾을 수 없습니다: tier={tier_idx}, "
-            f"template={template} (예: images/t{tier_idx}.jpg)"
+            f"template={template} (예: images/tier_icons/t{tier_idx}.png)"
         )
 
     @staticmethod
@@ -246,7 +271,7 @@ class CardState:
         image_path: Optional[str] = None,
         card_name: Optional[str] = None,
     ):
-        """enhancements.json visual 설정으로 카드 이미지를 렌더링해 PIL Image를 반환한다."""
+        """card_definitions.json visual 설정으로 카드 이미지를 렌더링해 PIL Image를 반환한다."""
         try:
             from PIL import Image, ImageDraw
         except Exception as e:
@@ -353,7 +378,7 @@ class CardState:
         """카드 이미지를 렌더링 후 파일로 저장하고 경로를 반환한다."""
         frame = self.render_visual(engine=engine, image_path=image_path, card_name=card_name)
         if output_path is None:
-            output_path = str((Path(__file__).resolve().parent / "images" / f"preview_{self.id}.png").resolve())
+            output_path = str((Path(__file__).resolve().parent / "images" / "card_images" / f"preview_{self.id}.png").resolve())
         out_abs = self._resolve_asset_path(output_path)
         out_abs.parent.mkdir(parents=True, exist_ok=True)
         frame.save(out_abs)
@@ -378,6 +403,16 @@ def safe_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def normalize_ratio_value(v: Any, default: float = 1.0) -> float:
+    """레거시 절대값(예: 100)을 비율(1.0)로 정규화한다."""
+    raw = safe_float(v, default)
+    if raw < 0:
+        return 0.0
+    if raw > 5.0:
+        return raw / 100.0
+    return raw
+
+
 def safe_int(v: Any, default: int = 0) -> int:
     try:
         return int(v)
@@ -395,6 +430,47 @@ def fmt_ratio_1(x: float) -> str:
 
 def fmt_ratio_2(x: float) -> str:
     return f"{x*100:.2f}%"
+
+
+def fmt_amount_1(x: float) -> str:
+    if abs(x - round(x)) < 1e-9:
+        return str(int(round(x)))
+    return f"{x:.1f}"
+
+
+def _extract_player_attack(player: Any, default: float = 100.0) -> float:
+    if player is None:
+        return default
+    attack_obj = getattr(player, "attack", None)
+    if isinstance(attack_obj, (int, float)):
+        return max(0.0, safe_float(attack_obj, default))
+    if attack_obj is not None:
+        power = getattr(attack_obj, "power", None)
+        if power is not None:
+            return max(0.0, safe_float(power, default))
+    stats = getattr(player, "stats", None)
+    if isinstance(stats, dict):
+        return max(0.0, safe_float(stats.get("attack", default), default))
+    return default
+
+
+def _extract_player_defense(player: Any, default: float = 100.0) -> float:
+    if player is None:
+        return default
+    defense_obj = getattr(player, "defense", None)
+    if isinstance(defense_obj, (int, float)):
+        return max(0.0, safe_float(defense_obj, default))
+    if defense_obj is not None:
+        defense_power = getattr(defense_obj, "defense_power", None)
+        if defense_power is not None:
+            return max(0.0, safe_float(defense_power, default))
+        armor = getattr(defense_obj, "armor", None)
+        if armor is not None:
+            return max(0.0, safe_float(armor, default))
+    stats = getattr(player, "stats", None)
+    if isinstance(stats, dict):
+        return max(0.0, safe_float(stats.get("defense", default), default))
+    return default
 
 
 class EnhancementEngine:
@@ -419,28 +495,54 @@ class EnhancementEngine:
         self.proc_lower_gap_rates = [0.15, 0.30, 0.70,1,1,1,1]
         self.proc_efficiency_double_gap_rates = [0.05, 0.20, 0.50, 1.00, 1.00, 1.00, 1.00]
         self.proc_same_tier_bonus_gap_rates = [0.05, 0.15, 0.50, 1.00, 1.00, 1.00, 1.00]
-        # stat/effect caps: mapping name -> (a, b, is_int)
-        # a: soft cap, b: breakthrough allowance (max extra raw amount),
-        # is_int: whether value should be integer
-        # Values are in the same units as stored in card.stats / card.effects.
-        # If stored values are small (<=1) but caps are provided >1, caps are
-        # interpreted as percentages and will be divided by 100 at application time.
-        self.value_caps: Dict[str, Tuple[float, float, bool]] = {
-            # stats
+        self.value_caps = self._load_value_caps(self.cfg.get("value_caps", {}))
+
+    @staticmethod
+    def _default_value_caps() -> Dict[str, Tuple[float, float, bool]]:
+        return {
             "attack": (math.inf, 0.0, False),
             "range": (3.0, 0.0, True),
-            # effects (keys use the same keys as card.effects) -- values in same units as stored
             "freeze_turns": (1.0, 1.0, False),
             "shield_ratio": (0.40, 0.60, False),
             "bleed_ratio": (1.50, 1.50, False),
             "armor_down_ratio": (0.40, 0.35, False),
             "draw_cards": (1.0, 1.0, False),
-            # defense-card focused effects
-            "temp_defense_ratio": (0.40, 0.20, False),
+            "splash_other_ratio": (1.0, 0.0, False),
+            "temp_armor_ratio": (1.0, 0.5, False),
             "on_hit_freeze_turns": (1.0, 1.0, False),
             "next_attack_bonus_ratio": (1.0, 2.0, False),
             "on_hit_bleed_ratio": (1.0, 2.0, False),
         }
+
+    @staticmethod
+    def _parse_cap_number(v: Any) -> float:
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("inf", "+inf", "infinity", "+infinity"):
+                return math.inf
+        return float(v)
+
+    def _load_value_caps(self, cfg_caps: Any) -> Dict[str, Tuple[float, float, bool]]:
+        caps = dict(self._default_value_caps())
+        if not isinstance(cfg_caps, dict):
+            return caps
+
+        for key, spec in cfg_caps.items():
+            try:
+                if isinstance(spec, dict):
+                    a = self._parse_cap_number(spec.get("soft_cap", math.inf))
+                    b = self._parse_cap_number(spec.get("breakthrough", 0.0))
+                    is_int = bool(spec.get("is_int", False))
+                elif isinstance(spec, (list, tuple)) and len(spec) >= 3:
+                    a = self._parse_cap_number(spec[0])
+                    b = self._parse_cap_number(spec[1])
+                    is_int = bool(spec[2])
+                else:
+                    continue
+                caps[str(key)] = (float(a), float(b), is_int)
+            except Exception:
+                continue
+        return caps
 
     @staticmethod
     def _normalize_card_types_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -448,7 +550,7 @@ class EnhancementEngine:
         if "tiers" in cfg or "card_types" in cfg:
             raise ValueError(
                 "구 스키마는 지원하지 않습니다. "
-                "enhancements.json은 {'attack': {'tiers': ...}, 'defense': {'tiers': ...}} 형식이어야 합니다."
+                "card_definitions.json은 {'attack': {'tiers': ...}, 'defense': {'tiers': ...}} 형식이어야 합니다."
             )
 
         direct = {
@@ -457,7 +559,7 @@ class EnhancementEngine:
             if isinstance(v, dict) and isinstance(v.get("tiers"), dict) and v.get("tiers")
         }
         if "attack" not in direct or "defense" not in direct:
-            raise ValueError("enhancements.json에 attack/defense tiers가 필요합니다.")
+            raise ValueError("card_definitions.json에 attack/defense tiers가 필요합니다.")
         return direct
 
     def _tiers_cfg_for_card(self, card_type: str) -> Dict[str, Any]:
@@ -562,6 +664,70 @@ class EnhancementEngine:
         return out
 
     @staticmethod
+    def _normalize_effect_name(effect_name: str) -> str:
+        # legacy 키 호환: temp_defense -> temp_armor
+        if effect_name == "temp_defense":
+            return "temp_armor"
+        return effect_name
+
+    @staticmethod
+    def _value_spec_max(spec: Any) -> Optional[float]:
+        if isinstance(spec, (int, float)):
+            return float(spec)
+        if isinstance(spec, dict) and spec.get("dist") == "uniform":
+            try:
+                return float(spec.get("max", 0.0))
+            except Exception:
+                return None
+        return None
+
+    def _is_hard_capped_now(self, key: str, cur: float) -> bool:
+        a, b, _ = self.value_caps.get(key, (math.inf, 0.0, False))
+        if math.isinf(a):
+            return False
+        return float(b) <= 0.0 and float(cur) >= float(a) - 1e-12
+
+    def _option_blocked_by_hard_cap(self, card: CardState, opt: Dict[str, Any]) -> bool:
+        """breakthrough=0이고 softcap 도달한 키를 더 올리려는 옵션은 후보에서 제외한다."""
+        for eff in opt.get("effects", []):
+            et = eff.get("type")
+            raw_val = eff.get("value")
+            vmax = self._value_spec_max(raw_val)
+
+            if et == "stat.add":
+                stat = str(eff.get("stat", ""))
+                cur = safe_float(card.stats.get(stat, 0.0), 0.0)
+                if self._is_hard_capped_now(stat, cur) and (vmax is None or vmax > 0.0):
+                    return True
+
+            elif et in ("stat.mul", "stat.mul_fixed"):
+                stat = str(eff.get("stat", ""))
+                if stat in ("attack", "shield"):
+                    continue
+                cur = safe_float(card.stats.get(stat, 0.0), 0.0)
+                # 곱연산의 value>0은 증가 시도다.
+                if self._is_hard_capped_now(stat, cur) and (vmax is None or vmax > 0.0):
+                    return True
+
+            elif et == "effect.additive":
+                effect = self._normalize_effect_name(str(eff.get("effect", "")))
+                field = str(eff.get("field", ""))
+                key = f"{effect}_{field}"
+                cur = safe_float(card.effects.get(key, 0.0), 0.0)
+                if self._is_hard_capped_now(key, cur) and (vmax is None or vmax > 0.0):
+                    return True
+
+            elif et == "effect.max":
+                effect = self._normalize_effect_name(str(eff.get("effect", "")))
+                field = str(eff.get("field", ""))
+                key = f"{effect}_{field}"
+                cur = safe_float(card.effects.get(key, 0.0), 0.0)
+                if self._is_hard_capped_now(key, cur) and (vmax is None or vmax > cur + 1e-12):
+                    return True
+
+        return False
+
+    @staticmethod
     def load(path: str) -> "EnhancementEngine":
         with open(path, "r", encoding="utf-8") as f:
             return EnhancementEngine(json.load(f))
@@ -661,7 +827,7 @@ class EnhancementEngine:
             return
 
         if et == "effect.additive":
-            effect = eff["effect"]
+            effect = self._normalize_effect_name(eff["effect"])
             field = eff["field"]
             key = f"{effect}_{field}"
             raw_val = eff.get("value")
@@ -677,7 +843,7 @@ class EnhancementEngine:
             return fmt_ratio_0(v) if isinstance(raw_val, dict) else None
 
         if et == "effect.max":
-            effect = eff["effect"]
+            effect = self._normalize_effect_name(eff["effect"])
             field = eff["field"]
             key = f"{effect}_{field}"
             raw_val = eff.get("value")
@@ -695,7 +861,7 @@ class EnhancementEngine:
             return None
 
         if et == "effect.mulstack_reduction":
-            effect = eff["effect"]
+            effect = self._normalize_effect_name(eff["effect"])
             field = eff["field"]
             key = f"{effect}_{field}"
             raw_val = eff.get("value")
@@ -705,7 +871,7 @@ class EnhancementEngine:
             return fmt_ratio_0(r) if isinstance(raw_val, dict) else None
 
         if et == "effect.set_if_none":
-            effect = eff["effect"]
+            effect = self._normalize_effect_name(eff["effect"])
             field = eff["field"]
             key = f"{effect}_{field}"
             if card.effects.get(key, None) is None:
@@ -752,6 +918,8 @@ class EnhancementEngine:
             raise ValueError(f"No options for tier={tier}, card_type={card.type}")
 
         def option_valid(opt: Dict[str, Any]) -> bool:
+            if self._option_blocked_by_hard_cap(card, opt):
+                return False
             for eff in opt.get("effects", []):
                 et = eff.get("type")
 
@@ -790,6 +958,8 @@ class EnhancementEngine:
             return True
 
         valid = [o for o in options if option_valid(o)]
+        if not valid:
+            raise ValueError(f"No valid options for tier={tier}, card_type={card.type}")
 
         # If a specific option was provided (from preview), try to use it
         if selected_option is not None:
@@ -797,17 +967,17 @@ class EnhancementEngine:
             sid = selected_option.get("id") if isinstance(selected_option, dict) else None
             matched = None
             if sid:
-                for o in options:
+                for o in valid:
                     if o.get("id") == sid:
                         matched = o
                         break
             # if no id match, and selected_option looks like an option dict, use it directly
             if matched is None and isinstance(selected_option, dict) and selected_option.get("id") is None:
-                opt = selected_option
+                opt = selected_option if selected_option in valid else rng.choice(valid)
             else:
-                opt = matched if matched is not None else (rng.choice(valid) if valid else rng.choice(options))
+                opt = matched if matched is not None else rng.choice(valid)
         else:
-            opt = rng.choice(valid if valid else options)
+            opt = rng.choice(valid)
 
         roll_parts: List[str] = []
 
@@ -998,6 +1168,8 @@ class EnhancementEngine:
         options = self._options_for_tier(tier_cfg)
 
         def option_valid(opt: Dict[str, Any]) -> bool:
+            if self._option_blocked_by_hard_cap(card, opt):
+                return False
             for eff in opt.get("effects", []):
                 et = eff.get("type")
 
@@ -1036,7 +1208,7 @@ class EnhancementEngine:
             return True
 
         valid = [o for o in options if option_valid(o)]
-        return valid if valid else options
+        return valid
 
     def preview_option(self, card: CardState, tier: str, rng: Any = None) -> Optional[Dict[str, Any]]:
         """해당 `tier`에서 카드 상태에 대해 실제 적용될(또는 적용 가능한) 옵션 하나를 샘플링하여 반환합니다.
@@ -1064,7 +1236,7 @@ def _default_base_attack_card(card_no: int) -> Dict[str, Any]:
         "id": f"atk_{card_no:03d}",
         "name": "기본 공격",
         "type": "attack",
-        "stats": {"attack": 100, "range": 1},
+        "stats": {"attack_ratio": 1.0, "range": 1},
         "effects": {
             "ignore_defense": False,
             "double_hit": False,
@@ -1076,6 +1248,7 @@ def _default_base_attack_card(card_no: int) -> Dict[str, Any]:
             "bleed_turns": 0,
             "armor_down_ratio": 0.0,
             "draw_cards": 0.0,
+            "splash_other_ratio": 0.0,
             "summon_unit": None,
         },
     }
@@ -1086,7 +1259,7 @@ def _default_defense_card() -> Dict[str, Any]:
         "id": "def_001",
         "name": "방어",
         "type": "defense",
-        "stats": {"shield": 100},
+        "stats": {"defense_ratio": 1.0},
         "effects": {
             "ignore_defense": False,
             "double_hit": False,
@@ -1098,7 +1271,8 @@ def _default_defense_card() -> Dict[str, Any]:
             "bleed_turns": 0,
             "armor_down_ratio": 0.0,
             "draw_cards": 0.0,
-            "temp_defense_ratio": 0.0,
+            "splash_other_ratio": 0.0,
+            "temp_armor_ratio": 0.0,
             "on_hit_freeze_turns": 0.0,
             "next_attack_bonus_ratio": 0.0,
             "on_hit_bleed_ratio": 0.0,
@@ -1122,17 +1296,31 @@ def _normalize_card_dict(cd: Dict[str, Any]) -> CardState:
 
     effects = dict(cd.get("effects", {}) or {})
 
-    base_atk = float(stats.get("attack", 0.0))
-    stats.setdefault("base_attack", base_atk)
+    attack_ratio = normalize_ratio_value(stats.get("attack_ratio", stats.get("base_attack", stats.get("attack", 100.0))), 1.0)
+    defense_ratio = normalize_ratio_value(
+        stats.get("defense_ratio", stats.get("base_shield", stats.get("shield", 100.0))),
+        1.0,
+    )
     stats.setdefault("attack_bonus_ratio", 0.0)
     stats.setdefault("resource", 0)
+    stats.setdefault("range", 1 if ctype == "attack" else 0)
+
     if ctype == "defense":
-        stats.setdefault("shield", 100.0)
+        stats["defense_ratio"] = defense_ratio
+        stats["base_shield"] = defense_ratio
+        stats["shield"] = defense_ratio
+        stats.setdefault("attack_ratio", 0.0)
+        stats.setdefault("base_attack", 0.0)
+        stats.setdefault("attack", 0.0)
     else:
+        stats["attack_ratio"] = attack_ratio
+        stats["base_attack"] = attack_ratio
+        stats["attack"] = attack_ratio
+        stats.setdefault("defense_ratio", 0.0)
+        stats.setdefault("base_shield", 0.0)
         stats.setdefault("shield", 0.0)
-    base_shield = float(stats.get("shield", 0.0))
-    stats.setdefault("base_shield", base_shield)
     stats.setdefault("shield_bonus_ratio", 0.0)
+
     effects.setdefault("ignore_defense", False)
     effects.setdefault("double_hit", False)
     effects.setdefault("aoe_all_enemies", False)
@@ -1142,7 +1330,11 @@ def _normalize_card_dict(cd: Dict[str, Any]) -> CardState:
     effects.setdefault("bleed_turns", 0)
     effects.setdefault("armor_down_ratio", 0.0)
     effects.setdefault("draw_cards", 0.0)
-    effects.setdefault("temp_defense_ratio", 0.0)
+    effects.setdefault("splash_other_ratio", 0.0)
+    # legacy 호환: temp_defense_ratio -> temp_armor_ratio
+    if "temp_armor_ratio" not in effects and "temp_defense_ratio" in effects:
+        effects["temp_armor_ratio"] = effects.get("temp_defense_ratio", 0.0)
+    effects.setdefault("temp_armor_ratio", 0.0)
     effects.setdefault("on_hit_freeze_turns", 0.0)
     effects.setdefault("next_attack_bonus_ratio", 0.0)
     effects.setdefault("on_hit_bleed_ratio", 0.0)
@@ -1189,26 +1381,25 @@ def load_first_card(path: str = "cards.json") -> CardState:
     return cards[0]
 
 
-def describe_card(card: CardState) -> str:
+def describe_card(card: CardState, player: Optional[Any] = None) -> str:
     parts: List[str] = []
     eff = card.effects
     resource = safe_int(card.stats.get("resource", 0))
+    player_attack = _extract_player_attack(player, 100.0)
+    player_defense = _extract_player_defense(player, 100.0)
     if card.type == "attack":
-        base_atk = safe_float(card.stats.get("base_attack", card.stats.get("attack", 0.0)))
-        bonus = safe_float(card.stats.get("attack_bonus_ratio", 0.0))
-        atk = base_atk * (1.0 + bonus)
+        atk = card.attack_ratio_value()
+        base_damage = max(0.0, safe_float(player_attack, 0.0)) * atk
+        total_damage = card.compute_attack_damage(player_attack)
         rngv = safe_int(card.stats.get("range", 0))
         if bool(eff.get("triple_attack", False)):
-            parts.append(f"피해를 {atk:.1f} * 3 = {atk * 3:.1f} 줍니다.")
+            parts.append(f"피해를 {fmt_amount_1(total_damage)} 줍니다.")
         else:
-            parts.append(f"피해를 {atk:.1f} 줍니다.")
+            parts.append(f"피해를 {fmt_amount_1(base_damage)} 줍니다.")
         parts.append(f"거리({rngv})")
     elif card.type == "defense":
-        base_shield = safe_float(card.stats.get("base_shield", card.stats.get("shield", 100.0)))
-        shield_bonus = safe_float(card.stats.get("shield_bonus_ratio", 0.0))
-        shield = base_shield * (1.0 + shield_bonus)
-        shield_text = str(int(shield)) if abs(shield - round(shield)) < 1e-9 else f"{shield:.1f}"
-        parts.append(f"보호막을 {shield_text} 얻습니다.")
+        shield_amount = card.compute_shield_amount(player_defense)
+        parts.append(f"보호막을 {fmt_amount_1(shield_amount)} 얻습니다.")
     else:
         parts.append(f"{card.name}")
 
@@ -1243,9 +1434,13 @@ def describe_card(card: CardState) -> str:
     if ar > 0:
         eff_parts.append(f"상대의 방어력을 {fmt_ratio_0(ar)} 감소시킨다")
 
-    tdr = safe_float(eff.get("temp_defense_ratio", 0.0))
+    spr = safe_float(eff.get("splash_other_ratio", 0.0))
+    if spr > 0:
+        eff_parts.append(f"공격 대상 외 모든 대상에게 {fmt_ratio_0(spr)} 데미지를 입힌다")
+
+    tdr = safe_float(eff.get("temp_armor_ratio", 0.0)) + safe_float(eff.get("temp_defense_ratio", 0.0))
     if tdr > 0:
-        eff_parts.append(f"일시 방어력 {fmt_ratio_0(tdr)}")
+        eff_parts.append(f"일시 갑옷 {fmt_ratio_0(tdr)}")
 
     ohf = safe_float(eff.get("on_hit_freeze_turns", 0.0))
     if ohf > 0:
@@ -1286,7 +1481,14 @@ def describe_card(card: CardState) -> str:
     return " ".join(parts).replace("  ", " ").strip()
 
 
-STAT_LABEL = {"attack": "공격력", "range": "거리", "resource": "자원", "shield": "보호막"}
+STAT_LABEL = {
+    "attack": "공격력",
+    "attack_ratio": "공격력 비율",
+    "range": "거리",
+    "resource": "자원",
+    "shield": "보호막",
+    "defense_ratio": "방어력 비율",
+}
 EFFECT_LABEL = {
     "ignore_defense": "방어 무시",
     "double_hit": "공격 2회",
@@ -1297,7 +1499,8 @@ EFFECT_LABEL = {
     "bleed_turns": "출혈 턴",
     "armor_down_ratio": "방어 감소",
     "draw_cards": "드로우",
-    "temp_defense_ratio": "일시 방어력",
+    "splash_other_ratio": "추가 광역 피해",
+    "temp_armor_ratio": "일시 갑옷",
     "on_hit_freeze_turns": "피격 시 빙결",
     "next_attack_bonus_ratio": "다음 공격 추가 피해",
     "on_hit_bleed_ratio": "피격 시 출혈 비율",
@@ -1314,7 +1517,8 @@ def format_field(key: str, v: Any) -> str:
         "shield_ratio",
         "bleed_ratio",
         "armor_down_ratio",
-        "temp_defense_ratio",
+        "splash_other_ratio",
+        "temp_armor_ratio",
         "next_attack_bonus_ratio",
         "on_hit_bleed_ratio",
         "on_hit_frenzy_ratio",
@@ -1342,14 +1546,10 @@ def diff_card(before: CardState, after: CardState) -> List[str]:
         return str(v)
 
     def calc_attack(c: CardState) -> float:
-        base_atk = safe_float(c.stats.get("base_attack", c.stats.get("attack", 0.0)))
-        bonus = safe_float(c.stats.get("attack_bonus_ratio", 0.0))
-        return base_atk * (1.0 + bonus)
+        return c.attack_ratio_value()
 
     def calc_shield(c: CardState) -> float:
-        base_sh = safe_float(c.stats.get("base_shield", c.stats.get("shield", 0.0)))
-        bonus = safe_float(c.stats.get("shield_bonus_ratio", 0.0))
-        return base_sh * (1.0 + bonus)
+        return c.defense_ratio_value()
 
     lines: List[str] = []
 
@@ -1362,13 +1562,18 @@ def diff_card(before: CardState, after: CardState) -> List[str]:
         label = STAT_LABEL.get(k, k)
         if isinstance(b, (int, float)) and isinstance(a, (int, float)):
             delta = a - b
+            if k in ("attack_ratio", "defense_ratio"):
+                delta_s = ("+" if delta >= 0 else "-") + fmt_ratio_1(abs(delta))
+                lines.append(f"- {label}: {fmt_ratio_1(float(b))} -> {fmt_ratio_1(float(a))} ({delta_s})")
+                continue
             if k == "attack_bonus_ratio":
                 b_atk = calc_attack(before)
                 a_atk = calc_attack(after)
                 if b_atk == a_atk:
                     continue
                 delta = a_atk - b_atk
-                lines.append(f"- 공격력: {b_atk:.1f} -> {a_atk:.1f} ({delta:+.1f})")
+                delta_s = ("+" if delta >= 0 else "-") + fmt_ratio_1(abs(delta))
+                lines.append(f"- 공격력 비율: {fmt_ratio_1(b_atk)} -> {fmt_ratio_1(a_atk)} ({delta_s})")
                 continue
             if k == "shield_bonus_ratio":
                 b_sh = calc_shield(before)
@@ -1376,8 +1581,8 @@ def diff_card(before: CardState, after: CardState) -> List[str]:
                 if b_sh == a_sh:
                     continue
                 delta = a_sh - b_sh
-                delta_s = ("+" if delta >= 0 else "-") + fmt_num(abs(delta))
-                lines.append(f"- 보호막: {fmt_num(b_sh)} -> {fmt_num(a_sh)} ({delta_s})")
+                delta_s = ("+" if delta >= 0 else "-") + fmt_ratio_1(abs(delta))
+                lines.append(f"- 방어력 비율: {fmt_ratio_1(b_sh)} -> {fmt_ratio_1(a_sh)} ({delta_s})")
                 continue
             delta_s = ("+" if delta >= 0 else "-") + fmt_num(abs(delta))
             lines.append(f"- {label}: {fmt_num(b)} -> {fmt_num(a)} ({delta_s})")

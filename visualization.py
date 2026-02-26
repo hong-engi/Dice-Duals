@@ -50,7 +50,7 @@ pg.init()
 screen = pg.display.set_mode((500, 700))
 clock = pg.time.Clock()
 font = pg.font.SysFont("Arial", 50)
-background = pg.image.load("images/board.png") # 배경 이미지 로드
+background = pg.image.load("images/board/board.png") # 배경 이미지 로드
 background = pg.transform.scale(background, (500, 500)) # 배경 이미지 크기 조정
 
 dice1_value = 1
@@ -100,8 +100,8 @@ while running:
             dice_value = dice1_value + dice2_value
 
     # 주사위 숫자 표시
-    dice1 = pg.image.load(f"images/{dice1_value}.png") # 주사위 이미지 로드
-    dice2 = pg.image.load(f"images/{dice2_value}.png")
+    dice1 = pg.image.load(f"images/dice_images/{dice1_value}.png") # 주사위 이미지 로드
+    dice2 = pg.image.load(f"images/dice_images/{dice2_value}.png")
 
     dice1 = pg.transform.scale(dice1, (100, 100)) # 주사위 이미지 크기 조정
     dice2 = pg.transform.scale(dice2, (100, 100))

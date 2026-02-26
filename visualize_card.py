@@ -18,7 +18,7 @@ def pick_card(cards: list[CardState], card_id: Optional[str], card_type: str) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="enhancements visual 설정으로 카드 이미지를 렌더링해 화면에 표시합니다.")
-    parser.add_argument("--enhancements", default="enhancements.json", help="강화 설정 JSON 경로")
+    parser.add_argument("--enhancements", default="card_definitions.json", help="카드/강화 설정 JSON 경로")
     parser.add_argument("--cards", default="cards.json", help="카드 JSON 경로")
     parser.add_argument("--card-id", default=None, help="렌더링할 카드 id")
     parser.add_argument("--card-type", default="attack", choices=["attack", "defense"], help="card-id 미지정 시 선택할 타입")

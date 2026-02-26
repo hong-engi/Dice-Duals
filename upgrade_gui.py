@@ -18,6 +18,7 @@ from cards import (
     load_cards,
     save_cards,
 )
+from unit import AttackProfile, DefenseProfile, Player
 from upgrade_main import EnhanceGacha, format_applied_option, format_extra_effects
 
 
@@ -27,9 +28,17 @@ class UpgradeGUI(tk.Tk):
         self.title("Dice Duals - Card Upgrade GUI")
         self.geometry("1200x820")
 
-        self.engine = EnhancementEngine.load("enhancements.json")
+        self.engine = EnhancementEngine.load("card_definitions.json")
         self.cards = load_cards("cards.json")
         self.gacha = EnhanceGacha()
+        self.dummy_player = Player(
+            unit_id="dummy_player",
+            name="Dummy Player",
+            max_hp=1.0,
+            hp=1.0,
+            attack=AttackProfile(power=100.0),
+            defense=DefenseProfile(armor=0.0, defense_power=100.0),
+        )
         self.n_choices = n_choices
 
         self.count = 0
@@ -38,6 +47,9 @@ class UpgradeGUI(tk.Tk):
         self.last_after = None
         self.last_card_label = ""
         self.preview_photo = None
+        self.preview_source_image = None
+        self.preview_resize_after_id = None
+        self.preview_caption_text = ""
 
         self.status_var = tk.StringVar(value="준비 완료")
         self.forced_var = tk.StringVar(value="천장 티어: 없음")
@@ -109,6 +121,7 @@ class UpgradeGUI(tk.Tk):
             fg="#DDDDDD",
         )
         self.preview_image_label.pack(fill="both", expand=True)
+        self.preview_image_frame.bind("<Configure>", self.on_preview_frame_configure)
 
         tk.Label(right, text="선택지 안내").pack(anchor="w")
         self.help_text = ScrolledText(right, height=8, wrap="word")
@@ -143,7 +156,7 @@ class UpgradeGUI(tk.Tk):
         lines = []
         for i, c in enumerate(self.cards, start=1):
             lines.append(f"[{i}] {c.name} ({c.id})")
-            lines.append(f"  {describe_card(c)}")
+            lines.append(f"  {describe_card(c, self.dummy_player)}")
             lines.append(
                 "  티어 강화 횟수: "
                 + enhancement_counts_line(c, [t.name for t in Tier], TIER_LABELS_BY_NAME)
@@ -184,28 +197,78 @@ class UpgradeGUI(tk.Tk):
             idx = max(1, len(self.cards))
         return idx
 
+    @staticmethod
+    def _resize_for_preview(img, max_w: int, max_h: int):
+        from PIL import Image, ImageFilter
+
+        src_w, src_h = img.size
+        if src_w <= 0 or src_h <= 0:
+            return img
+        scale = min(max_w / src_w, max_h / src_h, 1.0)
+        out_w = max(1, int(src_w * scale))
+        out_h = max(1, int(src_h * scale))
+        if (out_w, out_h) == (src_w, src_h):
+            return img.copy()
+
+        try:
+            resized = img.resize((out_w, out_h), Image.Resampling.LANCZOS, reducing_gap=3.0)
+        except TypeError:
+            resized = img.resize((out_w, out_h), Image.Resampling.LANCZOS)
+
+        # 다운스케일이 큰 경우 텍스트/라인 경계가 흐려지는 것을 약하게 보정한다.
+        if scale < 0.8:
+            resized = resized.filter(ImageFilter.UnsharpMask(radius=0.8, percent=110, threshold=2))
+        return resized
+
+    def render_preview_image(self) -> None:
+        if self.preview_source_image is None:
+            self.preview_photo = None
+            self.preview_image_label.config(image="", text="(미리보기 없음)")
+            self.preview_caption_var.set(self.preview_caption_text)
+            return
+
+        try:
+            from PIL import ImageTk
+
+            self.update_idletasks()
+            max_w = max(220, self.preview_image_label.winfo_width() - 16)
+            max_h = max(300, self.preview_image_label.winfo_height() - 16)
+            img = self._resize_for_preview(self.preview_source_image, max_w=max_w, max_h=max_h)
+            photo = ImageTk.PhotoImage(img)
+            self.preview_photo = photo
+            self.preview_image_label.config(image=photo, text="")
+            self.preview_caption_var.set(self.preview_caption_text)
+        except Exception as e:
+            self.preview_photo = None
+            self.preview_image_label.config(image="", text=f"미리보기 실패\n{e}")
+            self.preview_caption_var.set(self.preview_caption_text)
+
+    def on_preview_frame_configure(self, _event=None) -> None:
+        if self.preview_resize_after_id is not None:
+            try:
+                self.after_cancel(self.preview_resize_after_id)
+            except Exception:
+                pass
+        self.preview_resize_after_id = self.after(80, self.render_preview_image)
+
     def update_preview(self, card: Optional[CardState], caption: str = "") -> None:
         if card is None:
             self.preview_photo = None
+            self.preview_source_image = None
+            self.preview_caption_text = caption
             self.preview_image_label.config(image="", text="(미리보기 없음)")
             self.preview_caption_var.set(caption)
             return
         try:
-            from PIL import Image, ImageTk
-
-            img = card.render_visual(self.engine).copy()
-            self.update_idletasks()
-            max_w = max(220, self.preview_image_label.winfo_width() - 16)
-            max_h = max(300, self.preview_image_label.winfo_height() - 16)
-            img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
-            self.preview_photo = photo
-            self.preview_image_label.config(image=photo, text="")
-            self.preview_caption_var.set(caption or f"{card.name} ({card.id})")
+            self.preview_source_image = card.render_visual(self.engine).copy()
+            self.preview_caption_text = caption or f"{card.name} ({card.id})"
+            self.render_preview_image()
         except Exception as e:
             self.preview_photo = None
+            self.preview_source_image = None
+            self.preview_caption_text = caption or f"{card.name} ({card.id})"
             self.preview_image_label.config(image="", text=f"미리보기 실패\n{e}")
-            self.preview_caption_var.set(caption or f"{card.name} ({card.id})")
+            self.preview_caption_var.set(self.preview_caption_text)
 
     def show_selected_preview(self) -> None:
         if not self.cards:
@@ -219,12 +282,12 @@ class UpgradeGUI(tk.Tk):
     def build_choice_plans(self):
         if not self.cards:
             raise ValueError("보유 카드가 없습니다.")
-        slot_count = min(self.n_choices, len(self.cards))
+        slot_count = self.n_choices
         if slot_count <= 0:
             raise ValueError("보유 카드가 없습니다.")
 
         picks = self.gacha.preview_choice_tiers(n_choices=slot_count)
-        candidate_card_indices = random.sample(range(len(self.cards)), k=slot_count)
+        candidate_card_indices = random.choices(range(len(self.cards)), k=slot_count)
         choice_plans = []
 
         for idx, cidx in zip(picks, candidate_card_indices):
@@ -300,11 +363,19 @@ class UpgradeGUI(tk.Tk):
         for i, plan in enumerate(choice_plans, start=1):
             idx = plan["idx"]
             c = plan["card"]
+            preview_result = {
+                "efficiency_proc": plan.get("efficiency_proc", False),
+                "efficiency_double_proc": plan.get("efficiency_double_proc", False),
+                "lower_bonus_proc": plan.get("lower_bonus_proc", False),
+                "same_tier_bonus_proc": plan.get("same_tier_bonus_proc", False),
+            }
+            extra_text = format_extra_effects(preview_result)
             body.insert(
                 tk.END,
                 f"{i}) {c.name} ({c.id})\n"
-                f"   {describe_card(c)}\n"
-                f"   {TIERS_NAME[Tier(idx)]} - {plan.get('display','')}{plan.get('preview_roll_text','')}\n\n",
+                f"   {describe_card(c, self.dummy_player)}\n"
+                f"   {TIERS_NAME[Tier(idx)]} - {plan.get('display','')}{plan.get('preview_roll_text','')}\n"
+                + (f"   보너스 예고: {extra_text}\n\n" if extra_text else "\n"),
             )
         body.config(state="disabled")
 
