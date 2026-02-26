@@ -1,5 +1,6 @@
 import pygame as pg
 import random
+import math
 
 
 # 색상 및 버튼 정의
@@ -17,24 +18,22 @@ gauge_dir = 1 # 1: 증가, -1: 감소
 bar_width = 200
 bar_height = 20
 
-def roll_weighted_die(charge_ratio):
+def roll_weighted_die(charge_ratio, sigma=1.0):
     """
-    charge_ratio: 0.0 ~ 1.0
+    charge_ratio: 0.0 ~ 1.0 범위로 정규화된 충전 비율
+    sigma: 분포 퍼짐 정도
     """
 
-    # 기본 가중치
-    weights = [1, 1, 1, 1, 1, 1]
+    faces = [1, 2, 3, 4, 5, 6]
+    weights = []
 
-    # 높은 눈 가중치 증가
-    weights[4] += charge_ratio * 3   # 5
-    weights[5] += charge_ratio * 5   # 6
+    gauge_level = 1 + (charge_ratio * 5)  # 1~6 범위로 변환
 
-    # 가중치 기반 랜덤 선택
-    result = random.choices(
-        population=[1,2,3,4,5,6],
-        weights=weights
-    )[0]
+    for x in faces:
+        weight = math.exp(-((x - gauge_level) ** 2) / (2 * sigma ** 2))
+        weights.append(weight)
 
+    result = random.choices(faces, weights=weights)[0]
     return result
 
 def draw_button(screen, rect, text, is_hovered, is_clicked):
@@ -50,7 +49,7 @@ pg.init()
 screen = pg.display.set_mode((500, 700))
 clock = pg.time.Clock()
 font = pg.font.SysFont("Arial", 50)
-background = pg.image.load("images/board/board.png") # 배경 이미지 로드
+background = pg.image.load("images/board2.png") # 배경 이미지 로드
 background = pg.transform.scale(background, (500, 500)) # 배경 이미지 크기 조정
 
 dice1_value = 1
@@ -100,8 +99,8 @@ while running:
             dice_value = dice1_value + dice2_value
 
     # 주사위 숫자 표시
-    dice1 = pg.image.load(f"images/dice_images/{dice1_value}.png") # 주사위 이미지 로드
-    dice2 = pg.image.load(f"images/dice_images/{dice2_value}.png")
+    dice1 = pg.image.load(f"images/dice{dice1_value}.png") # 주사위 이미지 로드
+    dice2 = pg.image.load(f"images/dice{dice2_value}.png")
 
     dice1 = pg.transform.scale(dice1, (100, 100)) # 주사위 이미지 크기 조정
     dice2 = pg.transform.scale(dice2, (100, 100))
