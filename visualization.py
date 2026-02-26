@@ -100,8 +100,8 @@ while running:
             dice_value = dice1_value + dice2_value
 
     # 주사위 숫자 표시
-    dice1 = pg.image.load(f"images/{dice1_value}.png") # 주사위 이미지 로드
-    dice2 = pg.image.load(f"images/{dice2_value}.png")
+    dice1 = pg.image.load(f"images/dice{dice1_value}.png") # 주사위 이미지 로드
+    dice2 = pg.image.load(f"images/dice{dice2_value}.png")
 
     dice1 = pg.transform.scale(dice1, (100, 100)) # 주사위 이미지 크기 조정
     dice2 = pg.transform.scale(dice2, (100, 100))
