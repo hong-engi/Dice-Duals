@@ -122,6 +122,51 @@ def _card_label(card: CardState) -> str:
     return (card.name or "").strip() or ("공격" if card.type == "attack" else "방어")
 
 
+def _forced_tier_text(g: EnhanceGacha) -> str:
+    forced_idx = g._forced_min_tier()
+    if forced_idx < 0:
+        return ""
+    return f" - {_tier_name_ko(Tier(forced_idx).name)} 확정"
+
+
+def _print_pity_status(g: EnhanceGacha) -> None:
+    print("\n[티어별 남은 천장]")
+    for idx in range(len(Tier) - 1, -1, -1):
+        tier = Tier(idx)
+        cap = int(g.caps[idx]) if idx < len(g.caps) else 0
+        fail = int(g.fail_counts[idx]) if idx < len(g.fail_counts) else 0
+        if cap <= 0:
+            remain_text = "천장 없음"
+        else:
+            remain = max(0, cap - fail)
+            if remain == 0:
+                remain_text = "확정 상태"
+            else:
+                remain_text = f"{remain}회 남음"
+        print(f"- {TIERS_NAME[tier]}: {remain_text}")
+
+
+def _choice_plan_signature(plan: Dict[str, Any], card_index: int) -> tuple:
+    opt = plan.get("opt") if isinstance(plan, dict) else None
+    if isinstance(opt, dict):
+        opt_key = (
+            str(opt.get("id", "") or ""),
+            str(opt.get("display", "") or ""),
+            bool(opt.get("max_range", False)),
+        )
+    else:
+        opt_key = ("", "", False)
+    return (
+        int(card_index),
+        int(plan.get("idx", 0)),
+        opt_key,
+        bool(plan.get("efficiency_proc", False)),
+        bool(plan.get("efficiency_double_proc", False)),
+        bool(plan.get("lower_bonus_proc", False)),
+        bool(plan.get("same_tier_bonus_proc", False)),
+    )
+
+
 def _roll_center_weighted_count(rng: random.Random, min_count: int, max_count: int, center: int) -> int:
     lo = int(min_count)
     hi = int(max_count)
@@ -129,13 +174,16 @@ def _roll_center_weighted_count(rng: random.Random, min_count: int, max_count: i
         lo, hi = hi, lo
     c = max(lo, min(int(center), hi))
     values = list(range(lo, hi + 1))
-    weights: List[int] = []
+    max_dist = max(abs(c - lo), abs(hi - c))
+    if max_dist == 0:
+        return c
+    weights: List[float] = []
     for v in values:
-        if v <= c:
-            w = (v - lo) + 1
-        else:
-            w = (hi - v) + 1
-        weights.append(max(1, w))
+        dist = abs(v - c)
+        # 양끝 확률이 중심 확률의 1/3이 되도록 선형 가중치 설정.
+        # center weight = 3 * max_dist, edge weight = 1 * max_dist
+        w = float(max_dist + 2 * (max_dist - dist))
+        weights.append(max(1e-9, w))
     return rng.choices(values, weights=weights, k=1)[0]
 
 
@@ -170,52 +218,57 @@ def _manual_enhance_starting_cards(
         for roll_no in range(1, total + 1):
             slot_count = choice_count
             picks = g.preview_choice_tiers(n_choices=slot_count)
-            candidate_card_indices = random.choices(range(len(cards)), k=slot_count)
             choice_plans: List[Dict[str, Any]] = []
+            used_signatures: set[tuple] = set()
 
-            for idx, cidx in zip(picks, candidate_card_indices):
-                card = cards[cidx]
-                planned_opt = engine.preview_option(card, Tier(idx).name, rng=random)
-                if planned_opt is None:
-                    disp = "(옵션 없음)"
-                    planned_effects = []
-                else:
-                    disp = planned_opt.get("display", planned_opt.get("id", ""))
-                    if planned_opt.get("max_range", False):
-                        disp = f"{disp} (max range)"
-                    planned_effects = planned_opt.get("effects", [])
+            for idx in picks:
+                selected_plan: Optional[Dict[str, Any]] = None
+                selected_sig: Optional[tuple] = None
+                # 동일 라운드의 완전 중복 선택지는 재추첨한다.
+                for _ in range(24):
+                    cidx = random.randrange(len(cards))
+                    card = cards[cidx]
+                    planned_opt = engine.preview_option(card, Tier(idx).name, rng=random)
+                    if planned_opt is None:
+                        disp = "(옵션 없음)"
+                        planned_effects = []
+                    else:
+                        disp = planned_opt.get("display", planned_opt.get("id", ""))
+                        if planned_opt.get("max_range", False):
+                            disp = f"{disp} (max range)"
+                        planned_effects = planned_opt.get("effects", [])
 
-                higher_gap_for_choice = max(0, max(picks) - idx) if picks else 0
-                eff_rate, lower_rate, eff2_rate, same_tier_rate = engine.get_proc_rates(
-                    Tier(idx).name, higher_tier_gap=higher_gap_for_choice
-                )
-                eff_eligible = bool(planned_opt) and any(
-                    engine._is_efficiency_eligible(eff) for eff in planned_effects
-                )
-                efficiency_proc = eff_eligible and (random.random() < eff_rate)
-                efficiency_double_proc = eff_eligible and (random.random() < eff2_rate)
-                lower_bonus_proc = idx > 0 and (random.random() < lower_rate)
-                same_tier_bonus_proc = random.random() < same_tier_rate
-                if efficiency_double_proc:
-                    efficiency_proc = False
-                if same_tier_bonus_proc:
-                    lower_bonus_proc = False
+                    higher_gap_for_choice = max(0, max(picks) - idx) if picks else 0
+                    eff_rate, lower_rate, eff2_rate, same_tier_rate = engine.get_proc_rates(
+                        Tier(idx).name, higher_tier_gap=higher_gap_for_choice
+                    )
+                    eff_eligible = bool(planned_opt) and any(
+                        engine._is_efficiency_eligible(eff) for eff in planned_effects
+                    )
+                    efficiency_proc = eff_eligible and (random.random() < eff_rate)
+                    efficiency_double_proc = eff_eligible and (random.random() < eff2_rate)
+                    lower_bonus_proc = idx > 0 and (random.random() < lower_rate)
+                    same_tier_bonus_proc = random.random() < same_tier_rate
+                    if efficiency_double_proc:
+                        efficiency_proc = False
+                    if same_tier_bonus_proc:
+                        lower_bonus_proc = False
 
-                preview_parts: List[str] = []
-                if efficiency_proc:
-                    preview_parts.append("x1.5")
-                if efficiency_double_proc:
-                    preview_parts.append("x2")
-                if lower_bonus_proc:
-                    preview_parts.append("하위 티어 보너스!")
-                if same_tier_bonus_proc:
-                    preview_parts.append("동일 티어 보너스!")
-                preview_roll_text = f" [{' ] ['.join(preview_parts)}]" if preview_parts else ""
+                    preview_parts: List[str] = []
+                    if efficiency_proc:
+                        preview_parts.append("x1.5")
+                    if efficiency_double_proc:
+                        preview_parts.append("x2")
+                    if lower_bonus_proc:
+                        preview_parts.append("하위 티어 보너스!")
+                    if same_tier_bonus_proc:
+                        preview_parts.append("동일 티어 보너스!")
+                    preview_roll_text = f" [{' ] ['.join(preview_parts)}]" if preview_parts else ""
 
-                choice_plans.append(
-                    {
+                    plan = {
                         "idx": idx,
                         "card": card,
+                        "card_index": cidx,
                         "opt": planned_opt,
                         "higher_gap": higher_gap_for_choice,
                         "display": disp,
@@ -225,9 +278,17 @@ def _manual_enhance_starting_cards(
                         "same_tier_bonus_proc": same_tier_bonus_proc,
                         "preview_roll_text": preview_roll_text,
                     }
-                )
+                    sig = _choice_plan_signature(plan, cidx)
+                    selected_plan = plan
+                    selected_sig = sig
+                    if sig not in used_signatures:
+                        break
 
-            print(f"\n[{roll_no}/{total}] 강화 선택")
+                if selected_plan is not None and selected_sig is not None:
+                    used_signatures.add(selected_sig)
+                    choice_plans.append(selected_plan)
+
+            print(f"\n[{roll_no}/{total}] 강화 선택{_forced_tier_text(g)}")
             for i, plan in enumerate(choice_plans, start=1):
                 idx = plan["idx"]
                 card = plan["card"]
@@ -250,9 +311,12 @@ def _manual_enhance_starting_cards(
                 valid_inputs = {str(i) for i in range(1, slot_count + 1)}
                 choices_str = "/".join(str(i) for i in range(1, slot_count + 1))
                 while True:
-                    sel = input(f"선택({choices_str}, 엔터=1, a=남은횟수 자동, q=중단): ").strip().lower()
+                    sel = input(f"선택({choices_str}, 엔터=1, t=천장보기, a=남은횟수 자동, q=중단): ").strip().lower()
                     if sel in ("q", "quit", "exit"):
                         raise KeyboardInterrupt
+                    if sel in ("t", "pity"):
+                        _print_pity_status(g)
+                        continue
                     if sel in ("a", "auto"):
                         auto_remaining = True
                         best_tier = max(p["idx"] for p in choice_plans)
@@ -438,6 +502,63 @@ def _deal_damage(target: Enemy | Player | Comrade, raw_damage: float, ignore_def
     return damage
 
 
+def _damage_breakdown(target: Enemy | Player | Comrade, raw_damage: float, ignore_defense: bool = False) -> Dict[str, float]:
+    raw = max(0.0, float(raw_damage))
+    shield_before = max(0.0, float(target.state.shield))
+    if ignore_defense:
+        shield_block = min(shield_before, raw)
+        final_damage = max(0.0, raw - shield_block)
+        return {
+            "raw": raw,
+            "reduction_amount": 0.0,
+            "armor_block": 0.0,
+            "shield_block": shield_block,
+            "final_damage": final_damage,
+        }
+
+    reduction = max(0.0, min(0.95, float(target.defense.reduction_ratio)))
+    after_reduction = raw * (1.0 - reduction)
+    reduction_amount = raw - after_reduction
+    armor = max(0.0, float(target.defense.armor))
+    armor_block = min(after_reduction, armor)
+    after_armor = max(0.0, after_reduction - armor)
+    shield_block = min(shield_before, after_armor)
+    final_damage = max(0.0, after_armor - shield_block)
+    return {
+        "raw": raw,
+        "reduction_amount": reduction_amount,
+        "armor_block": armor_block,
+        "shield_block": shield_block,
+        "final_damage": final_damage,
+    }
+
+
+def _format_damage_line(
+    card_name: str,
+    target_name: str,
+    dealt: float,
+    breakdown: Dict[str, float],
+    hit_idx: int,
+    hit_count: int,
+) -> str:
+    head = (
+        f"{card_name} (연타 {hit_idx}/{hit_count}) -> {target_name}에게 "
+        if hit_count > 1
+        else f"{card_name} -> {target_name}에게 "
+    )
+    terms = [f"{breakdown.get('raw', 0.0):.1f}"]
+    red = breakdown.get("reduction_amount", 0.0)
+    arm = breakdown.get("armor_block", 0.0)
+    shd = breakdown.get("shield_block", 0.0)
+    if red > 0:
+        terms.append(f"피해감소 {red:.1f}")
+    if arm > 0:
+        terms.append(f"갑옷 {arm:.1f}")
+    if shd > 0:
+        terms.append(f"보호막 {shd:.1f}")
+    return head + " - ".join(terms) + f" = {dealt:.1f} 피해"
+
+
 def _apply_bleed(target: Enemy | Player | Comrade, damage_per_turn: float, turns: int) -> bool:
     if (not target.is_alive) or damage_per_turn <= 0 or turns <= 0:
         return False
@@ -533,7 +654,7 @@ def _render_status(
     print(f"턴 {turn}")
     player_parts = [f"플레이어 HP {player.hp:.1f}/{player.max_hp:.1f}"]
     if player.attack.power > 0:
-        player_parts.append(f"공격력 {player.attack.power:.1f}")
+        player_parts.append(f"기본 피해 {player.attack.power:.1f}")
     if player.defense.defense_power > 0:
         player_parts.append(f"방어력 {player.defense.defense_power:.1f}")
     if player.defense.armor > 0:
@@ -703,8 +824,13 @@ def _resolve_player_attack(
 
     attack_power = player.attack.power * (1.0 + rt.frenzy_ratio)
     if rt.next_attack_bonus_ratio > 0:
+        before_damage = card.compute_attack_damage(attack_power)
         attack_power *= 1.0 + rt.next_attack_bonus_ratio
-        print(f"- 다음 공격 보너스 적용: +{rt.next_attack_bonus_ratio*100:.1f}%")
+        after_damage = card.compute_attack_damage(attack_power)
+        print(
+            f"- 다음 공격 보너스 적용: +{rt.next_attack_bonus_ratio*100:.1f}% "
+            f"(기본 피해 {before_damage:.1f} -> {after_damage:.1f})"
+        )
         rt.next_attack_bonus_ratio = 0.0
 
     per_hit = card.compute_attack_damage(attack_power)
@@ -733,12 +859,10 @@ def _resolve_player_attack(
             targets = [target]
 
         for t in targets:
+            breakdown = _damage_breakdown(t, per_hit, ignore_defense=ignore_defense)
             dealt = _deal_damage(t, per_hit, ignore_defense=ignore_defense)
             any_hit = any_hit or dealt > 0
-            if hit_count > 1:
-                print(f"{card.name} (연타 {hit_idx}/{hit_count}) -> {t.name}에게 {dealt:.1f} 피해")
-            else:
-                print(f"{card.name} -> {t.name}에게 {dealt:.1f} 피해")
+            print(_format_damage_line(card.name, t.name, dealt, breakdown, hit_idx, hit_count))
             if dealt > 0:
                 _apply_attack_side_effects(player, t, card, dealt, rt, rng, cfg)
             if not t.is_alive:
@@ -748,10 +872,15 @@ def _resolve_player_attack(
                 splash_damage = per_hit * splash_other_ratio
                 others = [e for e in _alive_enemies(enemy_rows) if e.unit_id != t.unit_id]
                 for other in others:
+                    splash_breakdown = _damage_breakdown(other, splash_damage, ignore_defense=ignore_defense)
                     splash_dealt = _deal_damage(other, splash_damage, ignore_defense=ignore_defense)
                     print(
-                        f"  -> 파급 피해: {other.name}에게 {splash_dealt:.1f} "
-                        f"({splash_other_ratio*100:.0f}%)"
+                        f"  -> 파급 피해({splash_other_ratio*100:.0f}%): "
+                        f"{splash_breakdown.get('raw', 0.0):.1f}"
+                        + (f" - 피해감소 {splash_breakdown.get('reduction_amount', 0.0):.1f}" if splash_breakdown.get("reduction_amount", 0.0) > 0 else "")
+                        + (f" - 갑옷 {splash_breakdown.get('armor_block', 0.0):.1f}" if splash_breakdown.get("armor_block", 0.0) > 0 else "")
+                        + (f" - 보호막 {splash_breakdown.get('shield_block', 0.0):.1f}" if splash_breakdown.get("shield_block", 0.0) > 0 else "")
+                        + f" = {splash_dealt:.1f} ({other.name})"
                     )
                     if not other.is_alive:
                         print(f"  {other.name} 처치!")

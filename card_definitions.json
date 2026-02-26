@@ -67,7 +67,7 @@
         "options": [
           {
             "id": "atk_pct_small",
-            "display": "공격력이 2~4% 강화된다",
+            "display": "피해가 2~4% 강화된다",
             "effects": [
               {
                 "type": "stat.mul",
@@ -88,7 +88,7 @@
         "options": [
           {
             "id": "atk_pct_mid",
-            "display": "공격력이 8~12% 강화된다",
+            "display": "피해가 8~12% 강화된다",
             "effects": [
               {
                 "type": "stat.mul",
@@ -125,7 +125,7 @@
         "options": [
           {
             "id": "atk_pct_special",
-            "display": "공격력이 20~30% 강화된다",
+            "display": "피해가 20~30% 강화된다",
             "effects": [
               {
                 "type": "stat.mul",
@@ -141,7 +141,7 @@
           },
           {
             "id": "bleed_20_3",
-            "display": "공격력의 20%만큼 출혈을 3턴 가한다",
+            "display": "피해의 20%만큼 출혈을 3턴 가한다",
             "effects": [
               {
                 "type": "effect.additive",
@@ -180,7 +180,7 @@
         "options": [
           {
             "id": "atk_pct_heroic",
-            "display": "공격력이 50~80% 강화된다",
+            "display": "피해가 50~80% 강화된다",
             "effects": [
               {
                 "type": "stat.mul",
@@ -196,7 +196,7 @@
           },
           {
             "id": "bleed_30_3",
-            "display": "공격력의 30%만큼 출혈을 3턴 가한다",
+            "display": "피해의 30%만큼 출혈을 3턴 가한다",
             "effects": [
               {
                 "type": "effect.additive",
@@ -259,7 +259,7 @@
         "options": [
           {
             "id": "atk_pct_legend",
-            "display": "공격력이 100~150% 강화된다",
+            "display": "피해가 100~150% 강화된다",
             "effects": [
               {
                 "type": "stat.mul",
@@ -275,7 +275,7 @@
           },
           {
             "id": "bleed_50_3",
-            "display": "공격력의 50%만큼 출혈을 3턴 가한다",
+            "display": "피해의 50%만큼 출혈을 3턴 가한다",
             "effects": [
               {
                 "type": "effect.additive",
@@ -361,7 +361,7 @@
         "options": [
           {
             "id": "atk_pct_myth",
-            "display": "공격력이 200~300% 강화된다",
+            "display": "피해가 200~300% 강화된다",
             "effects": [
               {
                 "type": "stat.mul",
@@ -377,7 +377,7 @@
           },
           {
             "id": "bleed_80_3",
-            "display": "공격력의 80%만큼 출혈을 3턴 가한다",
+            "display": "피해의 80%만큼 출혈을 3턴 가한다",
             "effects": [
               {
                 "type": "effect.additive",
@@ -435,12 +435,18 @@
           },
           {
             "id": "range_plus_2",
-            "display": "거리 2 추가",
+            "display": "거리 1 추가 + 빙결 0.6턴",
             "effects": [
               {
                 "type": "stat.add",
                 "stat": "range",
-                "value": 2
+                "value": 1
+              },
+              {
+                "type": "effect.additive",
+                "effect": "freeze",
+                "field": "turns",
+                "value": 0.6
               }
             ]
           },
@@ -464,7 +470,7 @@
         "options": [
           {
             "id": "atk_300",
-            "display": "전체 공격력이 300% 강화된다",
+            "display": "전체 피해가 300% 강화된다",
             "effects": [
               {
                 "type": "stat.mul",

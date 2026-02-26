@@ -1411,7 +1411,7 @@ def describe_card(card: CardState, player: Optional[Any] = None) -> str:
     if bool(eff.get("aoe_all_enemies", False)):
         eff_parts.append("모든 적에게 피해를 입힌다")
     if bool(eff.get("triple_attack", False)):
-        eff_parts.append("전체 공격력이 300% 강화된다")
+        eff_parts.append("전체 피해가 300% 강화된다")
 
     ft = safe_float(eff.get("freeze_turns", 0.0))
     if ft > 0:
@@ -1428,7 +1428,7 @@ def describe_card(card: CardState, player: Optional[Any] = None) -> str:
     br = safe_float(eff.get("bleed_ratio", 0.0))
     bt = safe_int(eff.get("bleed_turns", 0))
     if br > 0 and bt > 0:
-        eff_parts.append(f"출혈(공격력의 {fmt_ratio_0(br)}) {bt}턴")
+        eff_parts.append(f"출혈(피해의 {fmt_ratio_0(br)}) {bt}턴")
 
     ar = safe_float(eff.get("armor_down_ratio", 0.0))
     if ar > 0:
@@ -1482,8 +1482,8 @@ def describe_card(card: CardState, player: Optional[Any] = None) -> str:
 
 
 STAT_LABEL = {
-    "attack": "공격력",
-    "attack_ratio": "공격력 비율",
+    "attack": "피해",
+    "attack_ratio": "피해 비율",
     "range": "거리",
     "resource": "자원",
     "shield": "보호막",
@@ -1502,7 +1502,7 @@ EFFECT_LABEL = {
     "splash_other_ratio": "추가 광역 피해",
     "temp_armor_ratio": "일시 갑옷",
     "on_hit_freeze_turns": "피격 시 빙결",
-    "next_attack_bonus_ratio": "다음 공격 추가 피해",
+    "next_attack_bonus_ratio": "다음 공격 피해 증가",
     "on_hit_bleed_ratio": "피격 시 출혈 비율",
     "on_hit_bleed_turns": "피격 시 출혈 턴",
     "on_hit_draw_cards": "피격 시 드로우",
@@ -1573,7 +1573,7 @@ def diff_card(before: CardState, after: CardState) -> List[str]:
                     continue
                 delta = a_atk - b_atk
                 delta_s = ("+" if delta >= 0 else "-") + fmt_ratio_1(abs(delta))
-                lines.append(f"- 공격력 비율: {fmt_ratio_1(b_atk)} -> {fmt_ratio_1(a_atk)} ({delta_s})")
+                lines.append(f"- 피해 비율: {fmt_ratio_1(b_atk)} -> {fmt_ratio_1(a_atk)} ({delta_s})")
                 continue
             if k == "shield_bonus_ratio":
                 b_sh = calc_shield(before)
