@@ -50,7 +50,7 @@ pg.init()
 screen = pg.display.set_mode((500, 700))
 clock = pg.time.Clock()
 font = pg.font.SysFont("Arial", 50)
-background = pg.image.load("images/board.png") # 배경 이미지 로드
+background = pg.image.load("images/board2.png") # 배경 이미지 로드
 background = pg.transform.scale(background, (500, 500)) # 배경 이미지 크기 조정
 
 dice1_value = 1
