@@ -915,15 +915,14 @@ def _resolve_player_defense(
 
     oh_freeze = max(0.0, _f(eff.get("on_hit_freeze_turns", 0.0)))
     if oh_freeze > 0:
-        rt.on_hit_freeze_turns = max(rt.on_hit_freeze_turns, oh_freeze)
+        rt.on_hit_freeze_turns += oh_freeze
         print(f"  -> 피격 시 빙결 반격 준비 ({rt.on_hit_freeze_turns:.2f}턴)")
 
     oh_bleed_ratio = max(0.0, _f(eff.get("on_hit_bleed_ratio", 0.0)))
     oh_bleed_turns = max(0.0, _f(eff.get("on_hit_bleed_turns", 0.0)))
     if oh_bleed_ratio > 0 and oh_bleed_turns > 0:
-        if rt.on_hit_bleed_ratio <= 0:
-            rt.on_hit_bleed_ratio = oh_bleed_ratio
-        rt.on_hit_bleed_turns = max(rt.on_hit_bleed_turns, oh_bleed_turns)
+        rt.on_hit_bleed_ratio += oh_bleed_ratio
+        rt.on_hit_bleed_turns += oh_bleed_turns
         print(
             f"  -> 피격 시 출혈 반격 준비 "
             f"({rt.on_hit_bleed_ratio*100:.1f}%, {rt.on_hit_bleed_turns:.2f}턴)"
@@ -931,12 +930,12 @@ def _resolve_player_defense(
 
     oh_draw = max(0.0, _f(eff.get("on_hit_draw_cards", 0.0)))
     if oh_draw > 0:
-        rt.on_hit_draw_cards = max(rt.on_hit_draw_cards, oh_draw)
+        rt.on_hit_draw_cards += oh_draw
         print(f"  -> 피격 시 드로우 준비 ({rt.on_hit_draw_cards:.2f}장)")
 
     oh_frenzy = max(0.0, _f(eff.get("on_hit_frenzy_ratio", 0.0)))
     if oh_frenzy > 0:
-        rt.on_hit_frenzy_ratio = max(rt.on_hit_frenzy_ratio, oh_frenzy)
+        rt.on_hit_frenzy_ratio += oh_frenzy
         print(f"  -> 피격 시 광란 준비 ({rt.on_hit_frenzy_ratio*100:.1f}%)")
 
     draw_cards = _f(eff.get("draw_cards", 0.0), 0.0)

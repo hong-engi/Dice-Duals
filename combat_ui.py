@@ -40,6 +40,7 @@ CARD_ATTACK = (145, 76, 76)
 CARD_DEFENSE = (72, 103, 150)
 GREEN = (100, 220, 140)
 RED = (235, 95, 95)
+TEMP_BUFF = (132, 204, 255)
 TIER_COLOR_BY_INDEX: Dict[int, Tuple[int, int, int]] = {
     0: (245, 245, 245),   # t0: white
     1: (255, 242, 170),   # t1: light yellow
@@ -174,6 +175,8 @@ class CombatUI:
         self.battle_log_expanded = False
         self.battle_log_scroll = 0
         self.battle_log_lines_per_page = 1
+        self.card_hover_anim: List[float] = []
+        self.card_use_anims: List[Dict[str, Any]] = []
         self._enh_rng_backup: Optional[object] = None
 
         self.new_game()
@@ -222,7 +225,7 @@ class CombatUI:
             hp=500.0,
             cards=[],
             attack=AttackProfile(power=50.0),
-            defense=DefenseProfile(armor=15.0, defense_power=50.0),
+            defense=DefenseProfile(armor=20.0, defense_power=50.0),
         )
         self.enemy_rows = self._build_enemy_rows_unique()
 
@@ -230,6 +233,8 @@ class CombatUI:
         self.battle_log_expanded = False
         self.battle_log_scroll = 0
         self.battle_log_lines_per_page = 1
+        self.card_hover_anim = []
+        self.card_use_anims = []
         self.selected_card_index = None
         self.selected_unit_key = None
         self.pending_attack = None
@@ -709,14 +714,50 @@ class CombatUI:
             return
 
         if self.pending_attack is not None:
-            self._try_target_click(pos)
+            if not self._try_target_click(pos):
+                self._cancel_pending_attack()
             return
+
+        selected_attack_idx: Optional[int] = None
+        if (
+            self.selected_card_index is not None
+            and 0 <= self.selected_card_index < len(self.rt.hand)
+            and self.rt.hand[self.selected_card_index].type == "attack"
+        ):
+            selected_attack_idx = self.selected_card_index
 
         unit_hit = self._unit_at_pos(pos)
         if unit_hit is not None:
             kind, unit = unit_hit
-            self.selected_unit_key = (kind, unit.unit_id)
+            if kind == "enemy" and selected_attack_idx is not None:
+                card = self.rt.hand[selected_attack_idx]
+                attack_range = int(card.stats.get("range", 1) or 1)
+                if bool(card.effects.get("max_range", False)):
+                    attack_range = max(attack_range, 99)
+                in_range = set(self._in_range_enemies(attack_range))
+                if unit in in_range:
+                    # 공격 대상 클릭은 유닛 선택과 분리한다.
+                    self.selected_unit_key = None
+                    self._play_card(selected_attack_idx)
+                    if self.pending_attack is not None and not self._resolve_pending_attack_target(unit):
+                        self._cancel_pending_attack()
+                    return
+                # 공격 카드가 선택된 상태에서 다른 유닛을 터치하면 카드 선택을 해제한다.
+                self.selected_card_index = None
+                self.log("카드 선택 취소")
+            elif self.selected_card_index is not None:
+                self.selected_card_index = None
+                self.log("카드 선택 취소")
+
+            key = (kind, unit.unit_id)
+            if self.selected_unit_key == key:
+                self.selected_unit_key = None
+            else:
+                self.selected_unit_key = key
             return
+        else:
+            # 유닛 외 영역 클릭 시 선택 해제
+            self.selected_unit_key = None
 
         log_button = self._battle_log_button_rect()
         log_panel = self._battle_log_expanded_rect()
@@ -730,10 +771,14 @@ class CombatUI:
             self.battle_log_expanded = False
             return
         if log_button.collidepoint(pos):
+            if self.selected_card_index is not None:
+                self.selected_card_index = None
             self._open_battle_log_panel()
             return
 
         if self.end_button_rect.collidepoint(pos):
+            if self.selected_card_index is not None:
+                self.selected_card_index = None
             self._end_player_turn()
             return
 
@@ -747,14 +792,25 @@ class CombatUI:
             self.log("카드 선택 취소")
             return
 
+        clicked_card = False
         for i, rect in enumerate(card_rects):
             if rect.collidepoint(pos):
+                clicked_card = True
+                card = self.rt.hand[i]
                 if self.selected_card_index == i:
-                    self._play_card(i)
+                    if card.type == "attack":
+                        self.selected_card_index = None
+                        self.log("카드 선택 취소")
+                    else:
+                        self._play_card(i)
                 else:
                     self.selected_card_index = i
                     self.log(f"카드 선택: {self.rt.hand[i].name} (재클릭 사용 / ESC,X 취소)")
-                break
+                return
+
+        if not clicked_card and self.selected_card_index is not None:
+            self.selected_card_index = None
+            self.log("카드 선택 취소")
 
     def _card_rects(self) -> List[pygame.Rect]:
         n = len(self.rt.hand)
@@ -860,7 +916,14 @@ class CombatUI:
             lines.append(f"ATK {unit.attack.power:.1f}")
         if unit.defense.defense_power > 0:
             lines.append(f"방어력 {unit.defense.defense_power:.1f}")
-        if unit.defense.armor > 0:
+        if kind == "player":
+            base_armor, bonus_armor = self._player_armor_parts()
+            if base_armor > 0 or bonus_armor > 0:
+                if bonus_armor > 0:
+                    lines.append(f"갑옷 {base_armor:.1f} (+{bonus_armor:.1f})")
+                else:
+                    lines.append(f"갑옷 {base_armor:.1f}")
+        elif unit.defense.armor > 0:
             lines.append(f"갑옷 {unit.defense.armor:.1f}")
         if unit.state.shield > 0:
             lines.append(f"보호막 {unit.state.shield:.1f}")
@@ -877,7 +940,7 @@ class CombatUI:
             lines.append(f"출혈 {bleed_dmg:.1f}/턴 ({bleed_turns}턴)")
         freeze_turns = int(max(0, unit.state.frozen_turns))
         if freeze_turns > 0:
-            lines.append(f"빙결 {freeze_turns}턴")
+            lines.append(f"빙결 {freeze_turns}")
         return lines
 
     def _draw_unit_tooltip(self) -> None:
@@ -886,37 +949,153 @@ class CombatUI:
         if self.battle_log_expanded:
             return
 
-        mouse = pygame.mouse.get_pos()
-        hovered = self._unit_at_pos(mouse)
+        hovered = self._unit_at_pos(pygame.mouse.get_pos())
         selected = self._get_selected_unit()
+        selected_panel = pygame.Rect(0, 0, 0, 0)
+        if selected is not None:
+            sk, su = selected
+            selected_panel = self._draw_unit_info_panel(sk, su)
 
-        target = hovered if hovered is not None else selected
-        if target is None:
-            return
+        if hovered is not None:
+            hk, hu = hovered
+            # 같은 유닛이면 중복 패널을 그리지 않는다.
+            if selected is None or not (selected[0] == hk and selected[1] is hu):
+                lines = self._unit_info_lines(hk, hu)
+                w = 250
+                line_h = self.tiny.get_linesize() + 2
+                h = 18 + 14 + line_h * len(lines) + 10
+                hx, hy = self._selected_tooltip_anchor(hk, hu)
+                if hx + w > self.width - 8:
+                    hx = self.width - w - 8
+                if hy + h > self.height - 8:
+                    hy = self.height - h - 8
+                if hx < 8:
+                    hx = 8
+                if hy < 8:
+                    hy = 8
+                hover_rect = pygame.Rect(hx, hy, w, h)
+                if selected_panel.width > 0 and hover_rect.colliderect(selected_panel):
+                    # 겹치면 hover 패널만 아래(또는 위)로 재배치
+                    self._draw_unit_info_panel_with_anchor(
+                        hk,
+                        hu,
+                        selected_panel.bottom + 8,
+                        fallback_top=max(8, selected_panel.y - h - 8),
+                    )
+                else:
+                    self._draw_unit_info_panel(hk, hu)
 
-        kind, unit = target
+    def _draw_unit_info_panel_with_anchor(
+        self,
+        kind: str,
+        unit: Any,
+        forced_y: int,
+        fallback_top: int,
+    ) -> pygame.Rect:
         lines = self._unit_info_lines(kind, unit)
         if not lines:
-            return
-
+            return pygame.Rect(0, 0, 0, 0)
         w = 250
         line_h = self.tiny.get_linesize() + 2
         h = 14 + line_h * len(lines) + 10
-        x = mouse[0] + 16
-        y = mouse[1] + 16
-        if x + w > self.width - 8:
-            x = self.width - w - 8
-        if y + h > self.height - 8:
-            y = self.height - h - 8
-        panel = pygame.Rect(x, y, w, h)
+        panel = self._unit_info_panel_rect(kind, unit, w, h, forced_y=forced_y, fallback_top=fallback_top)
         pygame.draw.rect(self.screen, PANEL, panel, border_radius=8)
         pygame.draw.rect(self.screen, BORDER, panel, width=2, border_radius=8)
-
         yy = panel.y + 8
         for i, line in enumerate(lines):
             color = TEXT if i == 0 else MUTED
-            self.screen.blit(self.tiny.render(line, True, color), (panel.x + 10, yy))
+            self._draw_info_line(panel.x + 10, yy, line, color)
             yy += line_h
+        return panel
+
+    def _draw_unit_info_panel(
+        self,
+        kind: str,
+        unit: Any,
+    ) -> pygame.Rect:
+        lines = self._unit_info_lines(kind, unit)
+        if not lines:
+            return pygame.Rect(0, 0, 0, 0)
+        w = 250
+        line_h = self.tiny.get_linesize() + 2
+        h = 14 + line_h * len(lines) + 10
+        panel = self._unit_info_panel_rect(kind, unit, w, h)
+        pygame.draw.rect(self.screen, PANEL, panel, border_radius=8)
+        pygame.draw.rect(self.screen, BORDER, panel, width=2, border_radius=8)
+        yy = panel.y + 8
+        for i, line in enumerate(lines):
+            color = TEXT if i == 0 else MUTED
+            self._draw_info_line(panel.x + 10, yy, line, color)
+            yy += line_h
+        return panel
+
+    def _unit_rect(self, kind: str, unit: Any) -> pygame.Rect:
+        if kind == "player":
+            (cx, cy), r = self._player_shape()
+            return pygame.Rect(cx - r, cy - r, r * 2, r * 2)
+        if kind == "enemy":
+            for enemy, rect, _ in self._enemy_slots():
+                if enemy is unit:
+                    return rect.copy()
+        return pygame.Rect(16, 16, 1, 1)
+
+    def _clamp_panel_rect(self, rect: pygame.Rect) -> pygame.Rect:
+        x = min(max(8, rect.x), self.width - rect.w - 8)
+        y = min(max(8, rect.y), self.height - rect.h - 8)
+        return pygame.Rect(x, y, rect.w, rect.h)
+
+    def _unit_info_panel_rect(
+        self,
+        kind: str,
+        unit: Any,
+        w: int,
+        h: int,
+        forced_y: Optional[int] = None,
+        fallback_top: Optional[int] = None,
+    ) -> pygame.Rect:
+        u = self._unit_rect(kind, unit).inflate(10, 10)
+
+        candidates: List[pygame.Rect] = []
+        if forced_y is not None:
+            candidates.append(pygame.Rect(u.right + 12, forced_y, w, h))
+            candidates.append(pygame.Rect(u.left - w - 12, forced_y, w, h))
+            if fallback_top is not None:
+                candidates.append(pygame.Rect(u.right + 12, fallback_top, w, h))
+                candidates.append(pygame.Rect(u.left - w - 12, fallback_top, w, h))
+        else:
+            candidates.extend(
+                [
+                    pygame.Rect(u.right + 12, u.y - 4, w, h),
+                    pygame.Rect(u.left - w - 12, u.y - 4, w, h),
+                    pygame.Rect(u.centerx - (w // 2), u.top - h - 8, w, h),
+                    pygame.Rect(u.centerx - (w // 2), u.bottom + 8, w, h),
+                ]
+            )
+
+        best = None
+        best_score = None
+        for cand in candidates:
+            clamped = self._clamp_panel_rect(cand)
+            overlap_area = clamped.clip(u).width * clamped.clip(u).height
+            # 상단 패널(헤더)와 겹치지 않도록 약한 페널티
+            header_overlap = 1 if clamped.y < 80 else 0
+            score = overlap_area * 1000 + header_overlap
+            if best is None or score < best_score:
+                best = clamped
+                best_score = score
+            if score == 0:
+                break
+        return best if best is not None else self._clamp_panel_rect(pygame.Rect(16, 16, w, h))
+
+    def _selected_tooltip_anchor(self, kind: str, unit: Any) -> Tuple[int, int]:
+        if kind == "player":
+            (cx, cy), r = self._player_shape()
+            return cx + r + 14, cy - r
+        if kind == "enemy":
+            for enemy, rect, _ in self._enemy_slots():
+                if enemy is unit:
+                    return rect.right + 12, rect.y - 4
+        return 16, 16
 
     def _enhance_choice_rects(self) -> List[pygame.Rect]:
         n = len(self.enh_choices)
@@ -952,6 +1131,67 @@ class CombatUI:
             lines.append(current)
         for i, line in enumerate(lines[:max_lines]):
             self.screen.blit(font.render(line, True, color), (rect.x, rect.y + i * (font.get_linesize() + 1)))
+
+    def _draw_inline_segments(
+        self,
+        x: int,
+        y: int,
+        segments: List[Tuple[str, Tuple[int, int, int]]],
+        font: pygame.font.Font,
+    ) -> int:
+        cx = x
+        for text, color in segments:
+            if not text:
+                continue
+            surf = font.render(text, True, color)
+            self.screen.blit(surf, (cx, y))
+            cx += surf.get_width()
+        return cx
+
+    def _player_armor_parts(self) -> Tuple[float, float]:
+        bonus = max(0.0, float(self.rt.temp_armor_bonus))
+        if bonus <= 0:
+            return max(0.0, float(self.player.defense.armor)), 0.0
+        # 적 턴 중에는 armor가 임시 보너스 포함값일 수 있어 기본값을 역산한다.
+        if self.phase == "enemy":
+            base = max(0.0, float(self.player.defense.armor) - bonus)
+        else:
+            base = max(0.0, float(self.player.defense.armor))
+        return base, bonus
+
+    def _draw_armor_line(
+        self,
+        x: int,
+        y: int,
+        base_armor: float,
+        bonus_armor: float,
+        font: pygame.font.Font,
+        base_color: Tuple[int, int, int],
+    ) -> None:
+        if bonus_armor > 0:
+            self._draw_inline_segments(
+                x,
+                y,
+                [
+                    (f"갑옷 {base_armor:.1f} ", base_color),
+                    (f"(+{bonus_armor:.1f})", TEMP_BUFF),
+                ],
+                font,
+            )
+        else:
+            self.screen.blit(font.render(f"갑옷 {base_armor:.1f}", True, base_color), (x, y))
+
+    def _draw_info_line(self, x: int, y: int, line: str, color: Tuple[int, int, int]) -> None:
+        if line.startswith("갑옷 ") and "(+" in line and line.endswith(")"):
+            try:
+                pivot = line.index(" (+")
+                left = line[:pivot + 1]  # trailing space 유지
+                right = line[pivot + 1:]  # "(+12.0)"
+                self._draw_inline_segments(x, y, [(left, color), (right, TEMP_BUFF)], self.tiny)
+                return
+            except Exception:
+                pass
+        self.screen.blit(self.tiny.render(line, True, color), (x, y))
 
     def _draw_card_background(self, rect: pygame.Rect, card_type: str) -> None:
         img = self.attack_card_image if card_type == "attack" else self.defense_card_image
@@ -992,6 +1232,13 @@ class CombatUI:
             return 38, 38
         return 20, 20
 
+    def _lower_tier_bonus_dims(self, tier_idx: int) -> Tuple[int, int]:
+        lower_idx = max(0, int(tier_idx) - 1)
+        icon = self._tier_icon_surface(lower_idx)
+        if icon is not None:
+            return 38, 38
+        return 20, 20
+
     def _draw_same_tier_bonus(self, x: int, y: int, tier_idx: int) -> Tuple[int, int]:
         icon = self._tier_icon_surface(tier_idx)
         if icon is not None:
@@ -1000,6 +1247,17 @@ class CombatUI:
             self.screen.blit(icon_s, (x, y))
             return iw, ih
         pygame.draw.circle(self.screen, _tier_color(tier_idx), (x + 10, y + 10), 10)
+        return 20, 20
+
+    def _draw_lower_tier_bonus(self, x: int, y: int, tier_idx: int) -> Tuple[int, int]:
+        lower_idx = max(0, int(tier_idx) - 1)
+        icon = self._tier_icon_surface(lower_idx)
+        if icon is not None:
+            iw, ih = 38, 38
+            icon_s = pygame.transform.smoothscale(icon, (iw, ih))
+            self.screen.blit(icon_s, (x, y))
+            return iw, ih
+        pygame.draw.circle(self.screen, _tier_color(lower_idx), (x + 10, y + 10), 10)
         return 20, 20
 
     def _card_cache_key(self, card: CardState) -> str:
@@ -1051,20 +1309,62 @@ class CombatUI:
         dst = scaled.get_rect(center=rect.center)
         self.screen.blit(scaled, dst.topleft)
 
+    def _draw_card_visual_alpha(self, card: CardState, rect: pygame.Rect, alpha: int) -> None:
+        a = max(0, min(255, int(alpha)))
+        if a <= 0:
+            return
+        surf = self._card_surface(card)
+        if surf is None:
+            bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+            bg.fill((80, 90, 110, int(90 * (a / 255.0))))
+            self.screen.blit(bg, rect.topleft)
+            return
+
+        key = self._card_cache_key(card)
+        skey = (key, rect.w, rect.h)
+        scaled = self.card_scaled_cache.get(skey)
+        if scaled is None:
+            sw, sh = surf.get_size()
+            if sw <= 0 or sh <= 0:
+                return
+            scale = min(rect.w / sw, rect.h / sh)
+            tw = max(1, int(sw * scale))
+            th = max(1, int(sh * scale))
+            scaled = pygame.transform.smoothscale(surf, (tw, th))
+            self.card_scaled_cache[skey] = scaled
+
+        bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        bg.fill((10, 12, 18, int(140 * (a / 255.0))))
+        self.screen.blit(bg, rect.topleft)
+
+        draw_surf = scaled.copy()
+        draw_surf.set_alpha(a)
+        dst = draw_surf.get_rect(center=rect.center)
+        self.screen.blit(draw_surf, dst.topleft)
+
+    def _spawn_card_use_animation(self, card: CardState, rect: pygame.Rect) -> None:
+        self.card_use_anims.append(
+            {
+                "card": card,
+                "rect": rect.copy(),
+                "t": 0.0,
+            }
+        )
+
     def _enemy_slots(self) -> List[Tuple[Enemy, pygame.Rect, int]]:
         slots: List[Tuple[Enemy, pygame.Rect, int]] = []
         _, right_zone, y_center = self._battlefield_bounds()
-        alive_rows: List[Tuple[int, List[Enemy]]] = []
-        for row_idx, row in enumerate(self.enemy_rows, start=1):
+        alive_rows: List[List[Enemy]] = []
+        for row in self.enemy_rows:
             alive_row = [e for e in row if e.is_alive]
             if alive_row:
-                alive_rows.append((row_idx, alive_row))
+                alive_rows.append(alive_row)
 
         if not alive_rows:
             return slots
 
         row_count = len(alive_rows)
-        for pos, (row_idx, alive_row) in enumerate(alive_rows):
+        for pos, alive_row in enumerate(alive_rows):
             x = int(right_zone.x + ((pos + 0.5) * right_zone.w / row_count))
             spacing = 160
             if len(alive_row) > 1:
@@ -1073,7 +1373,8 @@ class CombatUI:
             for j, e in enumerate(alive_row):
                 y = y0 + j * spacing
                 rect = pygame.Rect(x - 44, y - 44, 88, 88)
-                slots.append((e, rect, row_idx))
+                # 세 번째 값은 "현재 압축된 거리(열)"이다.
+                slots.append((e, rect, pos + 1))
         return slots
 
     def _draw_triangle(self, center: Tuple[int, int], size: int, color: Tuple[int, int, int]) -> None:
@@ -1098,7 +1399,11 @@ class CombatUI:
         if self.actions_left <= 0:
             return
 
+        src_rects = self._display_card_rects()
+        src_rect = src_rects[hand_index].copy() if 0 <= hand_index < len(src_rects) else None
         card = self.rt.hand.pop(hand_index)
+        if src_rect is not None:
+            self._spawn_card_use_animation(card, src_rect)
         self.selected_card_index = None
         self._gain_resource(card)
 
@@ -1183,31 +1488,24 @@ class CombatUI:
 
     def _in_range_enemies(self, attack_range: int) -> List[Enemy]:
         out: List[Enemy] = []
-        for row_idx, row in enumerate(self.enemy_rows, start=1):
-            if row_idx > attack_range:
+        current_dist = 1
+        for row in self.enemy_rows:
+            alive_row = [e for e in row if e.is_alive]
+            if not alive_row:
+                continue
+            if current_dist > attack_range:
                 break
-            for e in row:
-                if e.is_alive:
-                    out.append(e)
+            out.extend(alive_row)
+            current_dist += 1
         return out
 
-    def _try_target_click(self, pos: Tuple[int, int]) -> None:
+    def _resolve_pending_attack_target(self, target: Enemy) -> bool:
         if self.pending_attack is None:
-            return
-        valid = set(self._in_range_enemies(self.pending_attack.attack_range))
-        clicked_enemy: Optional[Enemy] = None
-        for enemy, rect, _ in self._enemy_slots():
-            if enemy in valid and rect.collidepoint(pos):
-                clicked_enemy = enemy
-                break
-        if clicked_enemy is None:
-            return
-        self.selected_unit_key = ("enemy", clicked_enemy.unit_id)
-
+            return False
         p = self.pending_attack
         self._apply_attack_hit(
             card=p.card,
-            target=clicked_enemy,
+            target=target,
             per_hit=p.per_hit,
             hit_idx=p.hit_index,
             hit_count=p.hit_count,
@@ -1215,23 +1513,46 @@ class CombatUI:
             splash_other_ratio=p.splash_other_ratio,
         )
         if self._check_end():
-            return
+            return True
 
         p.hit_index += 1
         if p.hit_index > p.hit_count:
             finished_card = p.card
             self.pending_attack = None
             self._finish_card_action(finished_card)
-            return
+            return True
 
         if not self._in_range_enemies(p.attack_range):
             self.log("사정거리 안에 대상이 없어 연타가 종료되었습니다.")
             finished_card = p.card
             self.pending_attack = None
             self._finish_card_action(finished_card)
-            return
+            return True
 
         self.log(f"대상 선택: {p.card.name} ({p.hit_index}/{p.hit_count})")
+        return True
+
+    def _try_target_click(self, pos: Tuple[int, int]) -> bool:
+        if self.pending_attack is None:
+            return False
+        valid = set(self._in_range_enemies(self.pending_attack.attack_range))
+        clicked_enemy: Optional[Enemy] = None
+        for enemy, rect, _ in self._enemy_slots():
+            if enemy in valid and rect.collidepoint(pos):
+                clicked_enemy = enemy
+                break
+        if clicked_enemy is None:
+            return False
+        return self._resolve_pending_attack_target(clicked_enemy)
+
+    def _cancel_pending_attack(self) -> None:
+        if self.pending_attack is None:
+            return
+        card = self.pending_attack.card
+        self.pending_attack = None
+        self.rt.hand.append(card)
+        self.selected_card_index = None
+        self.log("카드 선택 취소")
 
     def _apply_attack_hit(
         self,
@@ -1327,25 +1648,24 @@ class CombatUI:
 
         oh_freeze = max(0.0, float(eff.get("on_hit_freeze_turns", 0.0) or 0.0))
         if oh_freeze > 0:
-            self.rt.on_hit_freeze_turns = max(self.rt.on_hit_freeze_turns, oh_freeze)
+            self.rt.on_hit_freeze_turns += oh_freeze
             self.log(f"피격 반격 빙결 {self.rt.on_hit_freeze_turns:.2f}턴")
 
         oh_bleed_ratio = max(0.0, float(eff.get("on_hit_bleed_ratio", 0.0) or 0.0))
         oh_bleed_turns = max(0.0, float(eff.get("on_hit_bleed_turns", 0.0) or 0.0))
         if oh_bleed_ratio > 0 and oh_bleed_turns > 0:
-            if self.rt.on_hit_bleed_ratio <= 0:
-                self.rt.on_hit_bleed_ratio = oh_bleed_ratio
-            self.rt.on_hit_bleed_turns = max(self.rt.on_hit_bleed_turns, oh_bleed_turns)
+            self.rt.on_hit_bleed_ratio += oh_bleed_ratio
+            self.rt.on_hit_bleed_turns += oh_bleed_turns
             self.log(f"피격 반격 출혈 {self.rt.on_hit_bleed_ratio*100:.1f}%/{self.rt.on_hit_bleed_turns:.1f}턴")
 
         oh_draw = max(0.0, float(eff.get("on_hit_draw_cards", 0.0) or 0.0))
         if oh_draw > 0:
-            self.rt.on_hit_draw_cards = max(self.rt.on_hit_draw_cards, oh_draw)
+            self.rt.on_hit_draw_cards += oh_draw
             self.log(f"피격 반격 드로우 {self.rt.on_hit_draw_cards:.2f}")
 
         oh_frenzy = max(0.0, float(eff.get("on_hit_frenzy_ratio", 0.0) or 0.0))
         if oh_frenzy > 0:
-            self.rt.on_hit_frenzy_ratio = max(self.rt.on_hit_frenzy_ratio, oh_frenzy)
+            self.rt.on_hit_frenzy_ratio += oh_frenzy
             self.log(f"피격 반격 광란 {self.rt.on_hit_frenzy_ratio*100:.1f}%")
 
         draw_cards = max(0.0, float(eff.get("draw_cards", 0.0) or 0.0))
@@ -1508,10 +1828,16 @@ class CombatUI:
 
             tier_idx = int(plan["idx"])
             tier_text = TIERS_NAME[Tier(tier_idx)]
-            self.screen.blit(
-                self.enh_choice_big.render(f"티어: {tier_text}", True, _tier_color(tier_idx)),
-                (text_x, text_y + 26),
-            )
+            tier_surf = self.enh_choice_big.render(f"티어: {tier_text}", True, _tier_color(tier_idx))
+            tier_pos = (text_x, text_y + 26)
+            self.screen.blit(tier_surf, tier_pos)
+            tier_icon = self._tier_icon_surface(tier_idx)
+            if tier_icon is not None:
+                icon_size = 24
+                icon_surf = pygame.transform.smoothscale(tier_icon, (icon_size, icon_size))
+                icon_x = tier_pos[0] + tier_surf.get_width() + 4
+                icon_y = tier_pos[1] + max(0, (tier_surf.get_height() - icon_size) // 2)
+                self.screen.blit(icon_surf, (icon_x, icon_y))
 
             current_desc = describe_card(plan["card"], self.player)
             self._draw_wrapped(
@@ -1532,15 +1858,15 @@ class CombatUI:
             if has_bonus:
                 items: List[Tuple[str, Any, int, int]] = []
                 if bool(plan.get("efficiency_proc", False)):
-                    items.append(("eff", ("×1.5", (245, 222, 106)), 38, 38))
+                    items.append(("eff", ("×1.5", (212, 205, 152)), 38, 38))
                 if bool(plan.get("efficiency_double_proc", False)):
-                    items.append(("eff", ("×2", (94, 220, 124)), 38, 38))
+                    items.append(("eff", ("×2", (150, 204, 166)), 38, 38))
                 if bool(plan.get("same_tier_bonus_proc", False)):
                     iw, ih = self._same_tier_bonus_dims(tier_idx)
                     items.append(("gem", tier_idx, iw, ih))
                 if bool(plan.get("lower_bonus_proc", False)):
-                    txt = self.tiny.render("하위 티어", True, GREEN)
-                    items.append(("text", txt, txt.get_width(), txt.get_height()))
+                    iw, ih = self._lower_tier_bonus_dims(tier_idx)
+                    items.append(("lower_gem", tier_idx, iw, ih))
 
                 if items:
                     pad_x = 8
@@ -1561,16 +1887,27 @@ class CombatUI:
                     pygame.draw.rect(self.screen, BORDER, bonus_box, width=1, border_radius=8)
 
                     bx = bonus_box.x + pad_x
-                    for kind, payload, iw, ih in items:
+                    for idx, (kind, payload, iw, ih) in enumerate(items):
                         iy = bonus_box.y + pad_y + (content_h - ih) // 2
                         if kind == "eff":
                             label, color = payload
                             self._draw_efficiency_badge((bx + 19, iy + 19), label, color)
                         elif kind == "gem":
                             self._draw_same_tier_bonus(bx, iy, int(payload))
+                        elif kind == "lower_gem":
+                            self._draw_lower_tier_bonus(bx, iy, int(payload))
                         else:
                             txt = payload
                             self.screen.blit(txt, (bx, iy))
+                        if idx < len(items) - 1:
+                            sep_x = bx + iw + (gap // 2)
+                            pygame.draw.line(
+                                self.screen,
+                                BORDER,
+                                (sep_x, bonus_box.y + 6),
+                                (sep_x, bonus_box.bottom - 6),
+                                1,
+                            )
                         bx += iw + gap
 
         log_panel = self._enh_log_collapsed_rect()
@@ -1639,13 +1976,23 @@ class CombatUI:
         )
         self.screen.blit(self.font.render(head, True, TEXT), (18, 18))
 
-        status = (
-            f"HP {self.player.hp:.1f}/{self.player.max_hp:.1f} | "
-            f"갑옷 {self.player.defense.armor:.1f} | "
-            f"보호막 {self.player.state.shield:.1f} | "
-            f"덱 {len(self.rt.deck)} / 버림 {len(self.rt.discard)} / 손패 {len(self.rt.hand)}"
+        base_armor, bonus_armor = self._player_armor_parts()
+        status_segments: List[Tuple[str, Tuple[int, int, int]]] = [
+            (f"HP {self.player.hp:.1f}/{self.player.max_hp:.1f}", MUTED),
+            (" | ", MUTED),
+            (f"갑옷 {base_armor:.1f}", MUTED),
+        ]
+        if bonus_armor > 0:
+            status_segments.append((f" (+{bonus_armor:.1f})", TEMP_BUFF))
+        status_segments.extend(
+            [
+                (" | ", MUTED),
+                (f"보호막 {self.player.state.shield:.1f}", MUTED),
+                (" | ", MUTED),
+                (f"덱 {len(self.rt.deck)} / 버림 {len(self.rt.discard)} / 손패 {len(self.rt.hand)}", MUTED),
+            ]
         )
-        self.screen.blit(self.small.render(status, True, MUTED), (18, 46))
+        self._draw_inline_segments(18, 46, status_segments, self.small)
 
         btn_color = (56, 86, 126) if self.phase == "player" and not self.game_over else (76, 76, 86)
         pygame.draw.rect(self.screen, btn_color, self.end_button_rect, border_radius=8)
@@ -1655,6 +2002,11 @@ class CombatUI:
     def _draw_units(self) -> None:
         left_zone, right_zone, y_center = self._battlefield_bounds()
         player_center = (left_zone.centerx, y_center)
+        selected = self._get_selected_unit()
+        selected_kind = selected[0] if selected is not None else None
+        selected_unit = selected[1] if selected is not None else None
+        if selected_kind == "player" and selected_unit is self.player and self.player.is_alive:
+            pygame.draw.circle(self.screen, (255, 224, 120), player_center, 68, width=5)
         pygame.draw.circle(self.screen, PLAYER_COLOR, player_center, 54)
         if self.player.state.shield > 0:
             pygame.draw.circle(self.screen, (120, 230, 255), player_center, 64, width=5)
@@ -1689,6 +2041,16 @@ class CombatUI:
         pending_targets = set()
         if self.pending_attack is not None:
             pending_targets = set(self._in_range_enemies(self.pending_attack.attack_range))
+        elif (
+            self.selected_card_index is not None
+            and 0 <= self.selected_card_index < len(self.rt.hand)
+            and self.rt.hand[self.selected_card_index].type == "attack"
+        ):
+            selected_card = self.rt.hand[self.selected_card_index]
+            attack_range = int(selected_card.stats.get("range", 1) or 1)
+            if bool(selected_card.effects.get("max_range", False)):
+                attack_range = max(attack_range, 99)
+            pending_targets = set(self._in_range_enemies(attack_range))
 
         enemy_slots = self._enemy_slots()
         row_rects: Dict[int, List[pygame.Rect]] = {}
@@ -1708,6 +2070,9 @@ class CombatUI:
             color = base_color
             self._draw_triangle(rect.center, 34, color)
             pygame.draw.rect(self.screen, BORDER, rect, width=2, border_radius=6)
+            if selected_kind == "enemy" and selected_unit is enemy:
+                sel = rect.inflate(14, 14)
+                pygame.draw.rect(self.screen, (255, 224, 120), sel, width=4, border_radius=9)
             if enemy in pending_targets:
                 hl = rect.inflate(10, 10)
                 pygame.draw.rect(self.screen, ENEMY_HL, hl, width=3, border_radius=8)
@@ -1719,17 +2084,28 @@ class CombatUI:
             e_hp_ratio = max(0.0, min(1.0, enemy.hp / enemy.max_hp))
             e_bar = pygame.Rect(rect.x - 4, name_y + 20, 96, 8)
             pygame.draw.rect(self.screen, (70, 36, 42), e_bar, border_radius=4)
-            pygame.draw.rect(self.screen, RED, (e_bar.x, e_bar.y, int(e_bar.w * e_hp_ratio), e_bar.h), border_radius=4)
+            hp_w = int(e_bar.w * e_hp_ratio)
+            pygame.draw.rect(self.screen, RED, (e_bar.x, e_bar.y, hp_w, e_bar.h), border_radius=4)
+
+            bleed_turns = int(max(0, enemy.state.tags.get("bleed_turns", 0)))
+            bleed_dmg = float(max(0.0, enemy.state.tags.get("bleed_damage", 0.0)))
+            if bleed_turns > 0 and bleed_dmg > 0 and hp_w > 0:
+                # 다음 턴 종료 시 출혈로 잃을 예상 체력을 현재 체력바 위에 별도 색으로 표시
+                bleed_loss = max(0.0, min(enemy.hp, bleed_dmg))
+                loss_w = int(e_bar.w * (bleed_loss / max(1.0, enemy.max_hp)))
+                if loss_w > 0:
+                    loss_w = min(loss_w, hp_w)
+                    loss_x = e_bar.x + hp_w - loss_w
+                    pygame.draw.rect(
+                        self.screen,
+                        (182, 82, 112),
+                        (loss_x, e_bar.y, loss_w, e_bar.h),
+                        border_radius=4,
+                    )
+
             hp_num = f"{enemy.hp:.0f}/{enemy.max_hp:.0f}"
             hp_num_surf = self.tiny.render(hp_num, True, TEXT)
             self.screen.blit(hp_num_surf, (rect.centerx - hp_num_surf.get_width() // 2, e_bar.bottom + 2))
-
-            bleed_turns = int(max(0, enemy.state.tags.get("bleed_turns", 0)))
-            if bleed_turns > 0:
-                icon_cx = e_bar.right + 12
-                icon_cy = e_bar.centery
-                pygame.draw.circle(self.screen, (220, 72, 72), (icon_cx, icon_cy), 7)
-                self.screen.blit(self.tiny.render("출", True, (255, 255, 255)), (icon_cx - 5, icon_cy - 7))
 
             status_y = e_bar.bottom + 20
 
@@ -1746,23 +2122,53 @@ class CombatUI:
             if bleed_turns > 0:
                 bcx = chip_x + 7
                 bcy = status_y + 8
-                pygame.draw.circle(self.screen, (220, 72, 72), (bcx, bcy), 7)
-                self.screen.blit(self.tiny.render("출", True, (255, 255, 255)), (bcx - 5, bcy - 7))
-                self.screen.blit(self.tiny.render(f"{bleed_turns}턴", True, (255, 255, 255)), (chip_x + 16, status_y + 1))
-                chip_x += 56
+                pygame.draw.circle(self.screen, (220, 72, 72), (bcx, bcy), 8)
+                bleed_num = self.tiny.render(str(bleed_turns), True, (255, 255, 255))
+                bleed_num_rect = bleed_num.get_rect(center=(bcx, bcy))
+                self.screen.blit(bleed_num, bleed_num_rect.topleft)
+                chip_x += 22
 
             if frozen_turns > 0:
-                freeze_txt = f"빙결 {frozen_turns}턴"
+                freeze_txt = f"{frozen_turns}"
                 freeze_w = max(56, self.tiny.size(freeze_txt)[0] + 10)
                 freeze_rect = pygame.Rect(chip_x, status_y, freeze_w, 16)
                 pygame.draw.rect(self.screen, (98, 188, 255), freeze_rect, border_radius=5)
                 self.screen.blit(self.tiny.render(freeze_txt, True, (255, 255, 255)), (freeze_rect.x + 5, freeze_rect.y + 1))
 
     def _draw_cards(self) -> None:
-        rects = self._display_card_rects()
+        base_rects = self._display_card_rects()
+        n = len(base_rects)
+        if len(self.card_hover_anim) != n:
+            old = self.card_hover_anim[:]
+            self.card_hover_anim = [old[i] if i < len(old) else 0.0 for i in range(n)]
+
+        hovered_idx = self._hovered_card_index()
+        for i in range(n):
+            target = 1.0 if hovered_idx == i else 0.0
+            # ease-out: 초반 빠르게, 후반 천천히 수렴
+            self.card_hover_anim[i] += (target - self.card_hover_anim[i]) * 0.28
+            if abs(target - self.card_hover_anim[i]) < 0.002:
+                self.card_hover_anim[i] = target
+
+        rects: List[pygame.Rect] = []
+        for i, r in enumerate(base_rects):
+            t = max(0.0, min(1.0, self.card_hover_anim[i]))
+            scale = 1.0 + 0.12 * t
+            w = max(1, int(r.w * scale))
+            h = max(1, int(r.h * scale))
+            ar = pygame.Rect(0, 0, w, h)
+            ar.center = r.center
+            ar.y -= int(10 * t)
+            rects.append(ar)
+
         selected_idx = self.selected_card_index
         cancel_rect = self._selected_card_cancel_rect(rects)
-        for i, rect in enumerate(rects):
+        draw_order = [i for i in range(len(rects)) if i != hovered_idx]
+        if hovered_idx is not None and 0 <= hovered_idx < len(rects):
+            draw_order.append(hovered_idx)
+
+        for i in draw_order:
+            rect = rects[i]
             card = self.rt.hand[i]
             if selected_idx == i:
                 glow = rect.inflate(14, 14)
@@ -1779,6 +2185,28 @@ class CombatUI:
             pygame.draw.rect(self.screen, (70, 32, 32), cancel_rect, border_radius=6)
             pygame.draw.rect(self.screen, (230, 130, 130), cancel_rect, width=1, border_radius=6)
             self._draw_rect_x(cancel_rect, (255, 255, 255))
+
+        # 카드 사용 시: 위로 올라가며 사라지는 애니메이션
+        next_anims: List[Dict[str, Any]] = []
+        for anim in self.card_use_anims:
+            t = float(anim.get("t", 0.0))
+            t += 0.10
+            if t >= 1.0:
+                continue
+            p = max(0.0, min(1.0, t))
+            ease = 1.0 - ((1.0 - p) * (1.0 - p))  # ease-out
+            base: pygame.Rect = anim["rect"]
+            scale = 1.0 + 0.10 * ease
+            w = max(1, int(base.w * scale))
+            h = max(1, int(base.h * scale))
+            r = pygame.Rect(0, 0, w, h)
+            r.centerx = base.centerx
+            r.centery = base.centery - int(120 * ease)
+            alpha = int(255 * (1.0 - p))
+            self._draw_card_visual_alpha(anim["card"], r, alpha)
+            anim["t"] = t
+            next_anims.append(anim)
+        self.card_use_anims = next_anims
 
     def _draw_logs(self) -> None:
         button = self._battle_log_button_rect()
@@ -1797,7 +2225,24 @@ class CombatUI:
         if info_idx is not None and not self.battle_log_expanded:
             card = self.rt.hand[info_idx]
             panel_x = button.right + 10
-            panel = pygame.Rect(panel_x, button.y - 4, self.width - panel_x - 18, 110)
+            detail_parts = [p.strip() for p in describe_card(card, self.player).split(" / ") if p.strip()]
+            if not detail_parts:
+                detail_parts = [describe_card(card, self.player)]
+
+            max_lines = 4
+            lines = detail_parts[:max_lines]
+            line_h = 18
+            title_h = 18
+            content_h = max(1, len(lines)) * line_h
+            panel_h = 8 + title_h + 6 + content_h + 8
+
+            max_panel_w = min(620, self.width - panel_x - 18)
+            min_panel_w = 240
+            text_w = self.tiny.size(card.name)[0]
+            for part in lines:
+                text_w = max(text_w, self.tiny.size(part)[0])
+            panel_w = max(min_panel_w, min(max_panel_w, text_w + 24))
+            panel = pygame.Rect(panel_x, button.y - 4, panel_w, panel_h)
             pygame.draw.rect(self.screen, PANEL, panel, border_radius=8)
             pygame.draw.rect(self.screen, BORDER, panel, width=2, border_radius=8)
             self.screen.blit(
@@ -1805,12 +2250,8 @@ class CombatUI:
                 (panel.x + 10, panel.y + 8),
             )
 
-            detail_parts = [p.strip() for p in describe_card(card, self.player).split(" / ") if p.strip()]
-            if not detail_parts:
-                detail_parts = [describe_card(card, self.player)]
-            yy = panel.y + 30
-            max_lines = 4
-            for part in detail_parts[:max_lines]:
+            yy = panel.y + 8 + title_h + 6
+            for part in lines:
                 self._draw_wrapped(
                     part,
                     pygame.Rect(panel.x + 10, yy, panel.w - 18, 18),
@@ -1858,7 +2299,14 @@ class CombatUI:
     def _draw_overlay(self) -> None:
         if self.pending_attack is not None:
             msg = f"공격 대상 선택: {self.pending_attack.card.name} ({self.pending_attack.hit_index}/{self.pending_attack.hit_count})"
-            self.screen.blit(self.small.render(msg, True, ENEMY_HL), (520, self.height - 156))
+            left_zone, right_zone, y_center = self._battlefield_bounds()
+            mid_x = (left_zone.right + right_zone.left) // 2
+            msg_surf = self.small.render(msg, True, ENEMY_HL)
+            bg = pygame.Rect(0, 0, msg_surf.get_width() + 18, msg_surf.get_height() + 10)
+            bg.center = (mid_x, y_center - 120)
+            pygame.draw.rect(self.screen, (24, 30, 44), bg, border_radius=8)
+            pygame.draw.rect(self.screen, BORDER, bg, width=1, border_radius=8)
+            self.screen.blit(msg_surf, (bg.x + 9, bg.y + 5))
 
         self._draw_unit_tooltip()
 
