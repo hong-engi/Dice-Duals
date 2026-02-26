@@ -9,6 +9,34 @@ DARK_GRAY = (150, 150, 150)
 BLACK = (0, 0, 0)
 button_rect = pg.Rect(10, 600, 200, 50) # x, y, width, height
 
+# 게이지 변수
+max_gauge = 100
+current_gauge = 0
+gauge_differential = 5
+gauge_dir = 1 # 1: 증가, -1: 감소
+bar_width = 200
+bar_height = 20
+
+def roll_weighted_die(charge_ratio):
+    """
+    charge_ratio: 0.0 ~ 1.0
+    """
+
+    # 기본 가중치
+    weights = [1, 1, 1, 1, 1, 1]
+
+    # 높은 눈 가중치 증가
+    weights[4] += charge_ratio * 3   # 5
+    weights[5] += charge_ratio * 5   # 6
+
+    # 가중치 기반 랜덤 선택
+    result = random.choices(
+        population=[1,2,3,4,5,6],
+        weights=weights
+    )[0]
+
+    return result
+
 def draw_button(screen, rect, text, is_hovered, is_clicked):
     color = DARK_GRAY if is_clicked else GRAY
     rect = pg.Rect(rect).inflate(10, 10) if is_hovered or is_clicked else pg.Rect(rect)
@@ -40,6 +68,19 @@ while running:
     is_hovered = button_rect.collidepoint(mouse_pos)
     draw_button(screen, button_rect, "Roll Dice", is_hovered, is_clicked)
 
+    if is_clicked:
+        current_gauge += gauge_differential * gauge_dir
+        if current_gauge >= max_gauge:
+            current_gauge = max_gauge
+            gauge_dir = -1
+        elif current_gauge <= 0:
+            current_gauge = 0
+            gauge_dir = 1
+    
+    # 게이지 바 그리기
+    pg.draw.rect(screen, GRAY, (10, 560, bar_width, bar_height)) # 배경 바
+    pg.draw.rect(screen, DARK_GRAY, (10, 560, int(bar_width * (current_gauge / max_gauge)), bar_height)) # 현재 게이지 바
+
     for event in pg.event.get():
         if event.type == pg.QUIT:
             running = False
@@ -50,8 +91,12 @@ while running:
         
         if event.type == pg.MOUSEBUTTONUP and is_clicked:
             is_clicked = False
-            dice1_value = random.randint(1, 6)
-            dice2_value = random.randint(1, 6)
+
+            charge_ratio = min(max(current_gauge / max_gauge, 0), 1) # 0.0 ~ 1.0 범위로 정규화
+            current_gauge = 0
+
+            dice1_value = roll_weighted_die(charge_ratio)
+            dice2_value = roll_weighted_die(charge_ratio)
             dice_value = dice1_value + dice2_value
 
     # 주사위 숫자 표시
@@ -61,8 +106,8 @@ while running:
     dice1 = pg.transform.scale(dice1, (100, 100)) # 주사위 이미지 크기 조정
     dice2 = pg.transform.scale(dice2, (100, 100))
     
-    screen.blit(dice1, (100, 500))
-    screen.blit(dice2, (300, 500))
+    screen.blit(dice1, (250, 500))
+    screen.blit(dice2, (350, 500))
     
     text = font.render(str(dice_value), True, (0, 0, 0))
     screen.blit(text, (250, 600))
