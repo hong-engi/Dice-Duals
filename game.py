@@ -1,3 +1,4 @@
+import argparse
 import math
 import random
 from pathlib import Path
@@ -23,6 +24,7 @@ BLACK = (12, 16, 24)
 LAST_ROLL_RESULT: dict[str, int | bool] | None = None
 ROLL_HISTORY: list[dict[str, int | bool]] = []
 ANIMATION_SPEED = 0.7
+FAST_ANIMATION_SPEED = 120.0
 
 # 원본(1024x1024) 보드 좌표: 시작칸 -> 마지막칸, 마지막 다음은 시작칸으로 순환
 BOARD_PATH_ORIGINAL: list[tuple[int, int]] = [
@@ -86,48 +88,54 @@ ABILITY_BARRICADE_CELL_1B = 7
 ABILITY_T2_ENHANCE_CELL_1B = 13
 ABILITY_REMOVE_CELL_1B = 19
 COMBAT_START_HAND = 4.0
-COMBAT_PRE_GAME_ENHANCE_ROLLS = 10
+COMBAT_PRE_GAME_ENHANCE_ROLLS = 1000
 COMBAT_MEET_ENHANCE_ROLLS = 0
 COMBAT_ENHANCE_ROLLS_PER_KILL = 3
 COMBAT_T2_PLUS_TIER = 2
+COMBAT_MAX_ENCOUNTER_ENEMIES = 8
 STUN_SPIN_CYCLE_MS = 4500.0
-STUN_HAMMER_SWING_BASE_MS = 360
+STUN_HAMMER_SWING_BASE_MS = 120
 STUN_HAMMER_HIT_HOLD_BASE_MS = 240
+BARRICADE_BOUNCE_BASE_MS = 280
+BARRICADE_BOUNCE_REACH_T = 0.58
 HAMMER_HITTING_IMAGE_PATH = Path("images/effects/hammer_hitting.png")
 HAMMER_HIT_IMAGE_PATH = Path("images/effects/hammer_hit.png")
+UNIT_ARROW_IMAGE_PATH = Path("images/effects/unit_arrow.png")
 HAMMER_REF_SIZE = (1536.0, 1024.0)
-HAMMER_IMPACT_CENTER_REF = (296.0, 844.0)
-HAMMER_PIVOT_REF = (1230.0, 483.0)
+HAMMER_IMPACT_CENTER_REF = (296.0, 778.0)
+HAMMER_PIVOT_REF = (1236.0, 473.0)
 HAMMER_IMPACT_WIDTH_REF = 450.0
 HAMMER_SWING_START_DEG = 60.0
+HAMMER_DEBUG_OVERLAY = True
 MARKER_REF_BOARD_SIZE = 700.0
 T2_MARKER_CENTER_REF = (671.0, 100.0)
 T2_MARKER_RADIUS_REF = 11.0
 COMBAT_PLAYER_PROFILE: dict[str, float | str] = {
-    "unit_id": "player",
-    "unit_key": "player",
+    "unit_id": "Player",
+    "unit_key": "Player",
     "name": "플레이어",
     "max_hp": 500.0,
-    "attack": 50.0,
-    "armor": 20.0,
-    "shield_power": 50.0,
+    "attack": 100.0,
+    "armor": 50.0,
+    "shield_power": 30.0,
 }
 COMBAT_UNIT_ARCHETYPES: dict[str, dict[str, float | str]] = {
-    "wolf": {"name": "늑대", "max_hp": 300.0, "attack": 30.0, "armor": 20.0},
-    "archer": {"name": "궁수", "max_hp": 200.0, "attack": 60.0, "armor": 0.0},
-    "mage": {"name": "마법사", "max_hp": 50.0, "attack": 150.0, "armor": 0.0},
+    "Wolf": {"name": "늑대", "max_hp": 200.0, "attack": 70.0, "armor": 50.0},
+    "Archer": {"name": "궁수", "max_hp": 150.0, "attack": 100.0, "armor": 30.0},
+    "Mage": {"name": "마법사", "max_hp": 100.0, "attack": 150.0, "armor": 20.0},
 }
 ENEMY_UNIT_TYPES = tuple(COMBAT_UNIT_ARCHETYPES.keys())
-ENEMY_START_COUNT = 8
+ENEMY_UNIT_WEIGHTS: tuple[float, ...] = tuple(2.0 if t == "Wolf" else 1.0 for t in ENEMY_UNIT_TYPES)
+ENEMY_START_COUNT = 50
 ENEMY_ADD_PER_LAP = 8
-ENEMY_ANIM_SPEED_PER_EXTRA = 0.06
-ENEMY_ANIM_SPEED_MAX = 3.0
+ENEMY_ANIM_REFERENCE_COUNT = 5
+ENEMY_ANIM_BASE_MULTIPLIER = 2.0
 ENEMY_SUMMON_BASE_MS = 560
 UNIT_FALLBACK_COLORS: dict[str, tuple[int, int, int]] = {
-    "player": (226, 114, 108),
-    "wolf": (118, 194, 255),
-    "archer": (247, 171, 108),
-    "mage": (194, 148, 255),
+    "Player": (226, 114, 108),
+    "Wolf": (118, 194, 255),
+    "Archer": (247, 171, 108),
+    "Mage": (194, 148, 255),
 }
 AURA_TEXTURE_PATH = Path("images/text_effects/aura1.png")
 AURA_DOWNSCALE = 0.28
@@ -392,8 +400,11 @@ def inner_route_points(
     return pts
 
 
-def main() -> int | None:
-    global LAST_ROLL_RESULT
+def main(*, fast: bool = False) -> int | None:
+    global LAST_ROLL_RESULT, ANIMATION_SPEED
+    fast_mode = bool(fast)
+    if fast:
+        ANIMATION_SPEED = FAST_ANIMATION_SPEED
     pg.init()
 
     screen_w, screen_h = 1200, 820
@@ -409,6 +420,15 @@ def main() -> int | None:
     font_deck_title = load_font(30, "keriskedu_bold")
     font_deck_line = load_font(19, "keriskedu_regular")
     font_t2_counter = load_font(29, "keriskedu_bold")
+
+    def draw_loading_overlay(text: str = "Loading...") -> None:
+        # 전투/강화 UI 전환 중 검은 공백 대신 로딩 문구를 고정 표시한다.
+        screen.fill((8, 10, 14))
+        loading_surf = font_button_bold.render(text, True, (245, 245, 245))
+        screen.blit(loading_surf, loading_surf.get_rect(center=(screen_w // 2, screen_h // 2)))
+        pg.display.flip()
+        pg.event.pump()
+
     # Layout
     board_size = min(int(screen_h * 0.92), 770)
     board_rect = pg.Rect(0, 0, board_size, board_size)
@@ -443,6 +463,9 @@ def main() -> int | None:
     deck_button_rect = pg.Rect(0, 0, 154, 46)
     deck_button_rect.x = min(screen_w - 16 - deck_button_rect.w, board_rect.right + 14)
     deck_button_rect.y = board_rect.y + 16
+    skip_button_rect = pg.Rect(0, 0, 154, 46)
+    skip_button_rect.x = min(screen_w - 16 - skip_button_rect.w, board_rect.right + 14)
+    skip_button_rect.y = screen_h - 16 - skip_button_rect.h
     deck_panel_rect = pg.Rect(0, 0, min(760, screen_w - 72), min(620, screen_h - 72))
     deck_panel_rect.center = (screen_w // 2, screen_h // 2)
 
@@ -483,11 +506,15 @@ def main() -> int | None:
         return lines
 
     def _random_enemy_unit_type() -> str:
-        return random.choice(ENEMY_UNIT_TYPES)
+        if not ENEMY_UNIT_TYPES:
+            return "Wolf"
+        return random.choices(ENEMY_UNIT_TYPES, weights=ENEMY_UNIT_WEIGHTS, k=1)[0]
 
     unit_image_cache: dict[tuple[str, int], pg.Surface] = {}
     unit_center_offset_cache: dict[tuple[str, int], tuple[float, float]] = {}
     unit_raw_cache: dict[str, pg.Surface] = {}
+    unit_arrow_cache: dict[int, pg.Surface] = {}
+    unit_arrow_raw: pg.Surface | None = None
     stun_effect_cache: dict[int, pg.Surface] = {}
     stun_raw_image: pg.Surface | None = None
     hammer_effect_cache: dict[tuple[str, int, int], pg.Surface] = {}
@@ -531,6 +558,33 @@ def main() -> int | None:
         surf = pg.Surface((size, size), pg.SRCALPHA)
         surf.blit(scaled, scaled.get_rect(center=(size // 2, size // 2)))
         unit_image_cache[key] = surf
+        return surf
+
+    def get_unit_arrow_image(size_px: int) -> pg.Surface:
+        nonlocal unit_arrow_raw
+        size = max(8, int(size_px))
+        cached = unit_arrow_cache.get(size)
+        if cached is not None:
+            return cached
+
+        if unit_arrow_raw is None:
+            try:
+                unit_arrow_raw = trim_alpha_bounds(pg.image.load(str(UNIT_ARROW_IMAGE_PATH)).convert_alpha())
+            except Exception:
+                unit_arrow_raw = pg.Surface((96, 96), pg.SRCALPHA)
+                pts = [(48, 8), (88, 62), (64, 62), (64, 88), (32, 88), (32, 62), (8, 62)]
+                pg.draw.polygon(unit_arrow_raw, (255, 240, 170), pts)
+                pg.draw.polygon(unit_arrow_raw, (42, 30, 16), pts, width=4)
+
+        raw_w = max(1, unit_arrow_raw.get_width())
+        raw_h = max(1, unit_arrow_raw.get_height())
+        fit_scale = min(size / float(raw_w), size / float(raw_h))
+        dst_w = max(1, int(round(raw_w * fit_scale)))
+        dst_h = max(1, int(round(raw_h * fit_scale)))
+        scaled = pg.transform.smoothscale(unit_arrow_raw, (dst_w, dst_h))
+        surf = pg.Surface((size, size), pg.SRCALPHA)
+        surf.blit(scaled, scaled.get_rect(center=(size // 2, size // 2)))
+        unit_arrow_cache[size] = surf
         return surf
 
     def get_unit_center_offset(unit_key: str, size_px: int) -> tuple[float, float]:
@@ -608,6 +662,8 @@ def main() -> int | None:
     ) -> None:
         hammer = get_hammer_effect_image(kind, impact_width_px)
         hw, hh = hammer.get_size()
+
+        # 원본(1536x1024) 기준 좌표를 현재 리사이즈된 해머 로컬 좌표로 변환
         impact_local = pg.Vector2(
             hw * (HAMMER_IMPACT_CENTER_REF[0] / HAMMER_REF_SIZE[0]),
             hh * (HAMMER_IMPACT_CENTER_REF[1] / HAMMER_REF_SIZE[1]),
@@ -616,23 +672,44 @@ def main() -> int | None:
             hw * (HAMMER_PIVOT_REF[0] / HAMMER_REF_SIZE[0]),
             hh * (HAMMER_PIVOT_REF[1] / HAMMER_REF_SIZE[1]),
         )
+
         impact_world = pg.Vector2(float(impact_xy[0]), float(impact_xy[1]))
-
         pivot_to_impact = impact_local - pivot_local
-        pivot_world = impact_world - pivot_to_impact.rotate(angle_deg)
+        # 0도(원본 각도)에서 impact_local이 impact_world에 정확히 맞도록 pivot 월드 좌표를 고정한다.
+        pivot_world = impact_world - pivot_to_impact
 
+        # pygame.transform.rotozoom(+deg)는 시각적으로 반시계(CCW) 회전,
+        # Vector2.rotate(+deg)는 화면 좌표에서 시계(CW) 방향이므로 부호를 반대로 맞춘다.
+        vec_rot_deg = -angle_deg
+
+        # pivot 기준으로 center의 월드 좌표를 계산해, 회전 후 이미지를 정확히 배치한다.
         center_local = pg.Vector2(hw * 0.5, hh * 0.5)
-        pivot_to_center = pivot_local - center_local
-        rotated_pivot_to_center = pivot_to_center.rotate(angle_deg)
-        center_world = pivot_world - rotated_pivot_to_center
+        pivot_to_center = center_local - pivot_local
+        center_world = pivot_world + pivot_to_center.rotate(vec_rot_deg)
 
         rotated = pg.transform.rotozoom(hammer, angle_deg, 1.0)
         if alpha < 255:
             rotated = rotated.copy()
             rotated.set_alpha(max(0, min(255, int(alpha))))
+
         rect = rotated.get_rect(center=(int(round(center_world.x)), int(round(center_world.y))))
         screen.blit(rotated, rect.topleft)
 
+        if HAMMER_DEBUG_OVERLAY:
+            pg.draw.rect(screen, (250, 92, 92), rect, width=2)
+
+            # 목표점 (노랑)
+            pg.draw.circle(screen, (255, 236, 122),
+                        (int(round(impact_world.x)), int(round(impact_world.y))), 6, width=2)
+
+            # 피봇 (파랑) - 항상 고정
+            pg.draw.circle(screen, (108, 220, 255),
+                        (int(round(pivot_world.x)), int(round(pivot_world.y))), 7, width=2)
+
+            # 현재 타격점 (주황) - 파랑 중심 원호
+            current_impact_world = pivot_world + pivot_to_impact.rotate(vec_rot_deg)
+            pg.draw.circle(screen, (255, 148, 92),
+                        (int(round(current_impact_world.x)), int(round(current_impact_world.y))), 5, width=2)
     # Gauge state
     max_gauge = 100
     current_gauge = 0
@@ -657,7 +734,7 @@ def main() -> int | None:
     current_phase = "Throw"
     player_pre_move_ms = int(1000 / ANIMATION_SPEED)
     player_post_move_ms = int(500 / ANIMATION_SPEED)
-    enemy_pre_move_base_ms = int(1000 / ANIMATION_SPEED)
+    enemy_pre_move_base_ms = int(500 / ANIMATION_SPEED)
     enemy_post_move_base_ms = int(500 / ANIMATION_SPEED)
     phase_timer_start_ms = 0
     token_position = 0
@@ -668,6 +745,10 @@ def main() -> int | None:
     step_to_position = 0
     step_start_ms = 0
     step_duration_ms = 220
+    player_bounce_start_ms = 0
+    player_bounce_duration_ms = int(BARRICADE_BOUNCE_BASE_MS / ANIMATION_SPEED)
+    player_bounce_from_position = 0
+    player_bounce_to_position = 0
     player_lap_count = 0
     roll_result_pause_ms = int(520 / ANIMATION_SPEED)
     roll_result_start_ms = 0
@@ -693,12 +774,14 @@ def main() -> int | None:
     blue_sleep_duration_ms = enemy_sleep_base_ms
     blue_stun_duration_ms = enemy_stun_base_ms
     blue_remove_duration_ms = enemy_remove_base_ms
+    blue_sleep_batch_token_ids: list[int] = []
+    blue_stun_recovered_this_turn: set[int] = set()
     blue_spawn_effects: list[dict[str, float]] = []
     meet_banner_until_ms = 0
     meet_effects: list[dict[str, float]] = []
     current_meeting_blue_ids: set[int] = set()
-    meet_lightning_duration_ms = 2000
-    meet_lightning_refresh_ms = 300
+    meet_lightning_duration_ms = 60 if fast_mode else 2000
+    meet_lightning_refresh_ms = 8 if fast_mode else 300
     meet_lightning_start_ms = 0
     meet_lightning_next_refresh_ms = 0
     meet_pending_blue_ids: set[int] = set()
@@ -717,22 +800,26 @@ def main() -> int | None:
     stun_hammer_effect: dict[str, float] | None = None
     board_game_over = False
     board_game_over_text = ""
+    skip_confirm_armed = False
     t2_plus_counter = 1
-    pending_t2_plus_rolls = 0
     t2_plus_banner_until_ms = 0
     t2_plus_banner_text = ""
     deck_panel_open = False
     deck_preview_lines: list[str] = []
     combat_template_state: list[dict[str, object]] = []
+    combat_enhance_gacha_state: dict[str, object] = {}
     board_player_hp = float(COMBAT_PLAYER_PROFILE.get("max_hp", 500.0))
 
     def _enemy_anim_speed_multiplier() -> float:
-        extra_enemies = max(0, len(blue_tokens) - ENEMY_START_COUNT)
-        return min(ENEMY_ANIM_SPEED_MAX, 1.0 + (extra_enemies * ENEMY_ANIM_SPEED_PER_EXTRA))
+        enemy_count = max(1, len(blue_tokens))
+        reference = float(max(1, ENEMY_ANIM_REFERENCE_COUNT))
+        proportional_mul = ENEMY_ANIM_BASE_MULTIPLIER * (enemy_count / reference)
+        return max(ENEMY_ANIM_BASE_MULTIPLIER, proportional_mul)
 
     def _enemy_phase_duration(base_ms: int, min_ms: int = 40) -> int:
+        del min_ms
         speed_mul = max(1.0, _enemy_anim_speed_multiplier())
-        return max(min_ms, int(round(base_ms / speed_mul)))
+        return max(1, int(round(base_ms / speed_mul)))
 
     def _register_blue_spawn(token_i: int, now_ms: int, stagger_ms: int = 0) -> None:
         if not (0 <= token_i < len(blue_tokens)):
@@ -761,33 +848,113 @@ def main() -> int | None:
         else:
             current_phase = "Throw"
 
+    def _is_enemy_animation_phase(phase_name: str) -> bool:
+        return phase_name in ("BluePreMove", "InnerMove", "BlueSleep", "BluePostMove", "BlueStun")
+
+    def _skip_enemy_animation_now(now_ms: int) -> None:
+        nonlocal current_phase, phase_timer_start_ms
+        nonlocal blue_active_from, blue_active_to, blue_active_start_ms, blue_active_duration_ms
+        nonlocal blue_active_steps_left
+
+        guard = 0
+        while guard < 4096:
+            guard += 1
+            if current_phase == "BluePreMove":
+                if blue_active_token_i is None:
+                    _begin_next_blue_pre_move(now_ms)
+                    if current_phase == "Throw":
+                        _finalize_enemy_turn_with_meet(now_ms)
+                        return
+                    continue
+                if blue_active_mode == "sleep":
+                    current_phase = "BluePostMove"
+                    phase_timer_start_ms = now_ms
+                    continue
+                current_phase = "InnerMove"
+                blue_active_from = blue_tokens[blue_active_token_i]
+                blue_active_to = (blue_active_from + 1) % len(inner_path)
+                blue_active_start_ms = now_ms - 1
+                blue_active_duration_ms = 1
+                continue
+
+            if current_phase == "BlueSleep":
+                current_phase = "BluePostMove"
+                phase_timer_start_ms = now_ms
+                continue
+
+            if current_phase == "BlueStun":
+                _begin_next_blue_pre_move(now_ms)
+                if current_phase == "Throw":
+                    _finalize_enemy_turn_with_meet(now_ms)
+                    return
+                continue
+
+            if current_phase == "InnerMove" and blue_active_token_i is not None:
+                while blue_active_steps_left > 0:
+                    blue_tokens[blue_active_token_i] = blue_active_to
+                    blue_active_steps_left -= 1
+                    if blue_active_steps_left > 0:
+                        blue_active_from = blue_tokens[blue_active_token_i]
+                        blue_active_to = (blue_active_from + 1) % len(inner_path)
+                current_phase = "BluePostMove"
+                phase_timer_start_ms = now_ms
+                continue
+
+            if current_phase == "BluePostMove":
+                _begin_next_blue_pre_move(now_ms)
+                if current_phase == "Throw":
+                    _finalize_enemy_turn_with_meet(now_ms)
+                    return
+                continue
+            return
+
     def _begin_next_blue_pre_move(now_ms: int) -> None:
         nonlocal current_phase, phase_timer_start_ms
         nonlocal blue_active_token_i, blue_active_order, blue_active_steps_left, blue_active_mode
-        nonlocal blue_sleep_duration_ms, blue_stun_duration_ms
-        if not blue_move_queue:
-            blue_active_token_i = None
-            blue_active_order = 0
-            blue_active_steps_left = 0
-            blue_active_mode = "move"
-            current_phase = "Throw"
-            return
-        head = blue_move_queue.pop(0)
-        blue_active_token_i = head["token_i"]
-        blue_active_order = head["order"]
-        blue_active_mode = head["mode"]
-        blue_active_steps_left = head["steps"]
-        if blue_active_mode == "sleep":
-            blue_sleep_duration_ms = _enemy_phase_duration(enemy_sleep_base_ms, min_ms=120)
-            current_phase = "BlueSleep"
-            phase_timer_start_ms = now_ms
-        elif blue_active_mode == "stun":
-            blue_stun_duration_ms = _enemy_phase_duration(enemy_stun_base_ms, min_ms=100)
-            current_phase = "BlueStun"
-            phase_timer_start_ms = now_ms
-        else:
+        nonlocal blue_sleep_duration_ms, blue_sleep_batch_token_ids, blue_stun_recovered_this_turn
+        while blue_move_queue:
+            head = blue_move_queue.pop(0)
+            mode = str(head["mode"])
+            # 기절은 적 턴에서 표시/대기 없이 즉시 소모한다.
+            if mode == "stun":
+                ti = int(head["token_i"])
+                if 0 <= ti < len(blue_tokens):
+                    blue_stun_recovered_this_turn.add(ti)
+                continue
+            if mode == "sleep":
+                sleep_batch = [int(head["token_i"])]
+                remain_queue: list[dict[str, int | str]] = []
+                for item in blue_move_queue:
+                    if str(item.get("mode", "")) == "sleep":
+                        sleep_batch.append(int(item["token_i"]))
+                    else:
+                        remain_queue.append(item)
+                blue_move_queue[:] = remain_queue
+                blue_sleep_batch_token_ids = [i for i in sleep_batch if 0 <= i < len(blue_tokens)]
+                if not blue_sleep_batch_token_ids:
+                    continue
+                blue_active_token_i = int(blue_sleep_batch_token_ids[0])
+                blue_active_order = int(head["order"])
+                blue_active_mode = mode
+                blue_active_steps_left = 0
+                blue_sleep_duration_ms = _enemy_phase_duration(enemy_sleep_base_ms, min_ms=120)
+                current_phase = "BlueSleep"
+                phase_timer_start_ms = now_ms
+                return
+            blue_sleep_batch_token_ids = []
+            blue_active_token_i = int(head["token_i"])
+            blue_active_order = int(head["order"])
+            blue_active_mode = mode
+            blue_active_steps_left = int(head["steps"])
             current_phase = "BluePreMove"
             phase_timer_start_ms = now_ms
+            return
+        blue_active_token_i = None
+        blue_active_order = 0
+        blue_active_steps_left = 0
+        blue_active_mode = "move"
+        blue_sleep_batch_token_ids = []
+        current_phase = "Throw"
 
     def _build_blue_action(order: int, token_i: int, force_move: bool = False) -> dict[str, int | str]:
         if force_move:
@@ -852,7 +1019,8 @@ def main() -> int | None:
                 item["steps"] = 0
 
     def _remove_blue_by_index(token_i: int) -> None:
-        nonlocal blue_active_token_i, current_meeting_blue_ids, blue_spawn_effects
+        nonlocal blue_active_token_i, current_meeting_blue_ids, blue_spawn_effects, blue_sleep_batch_token_ids
+        nonlocal blue_stun_recovered_this_turn
         if not (0 <= token_i < len(blue_tokens)):
             return
         blue_tokens.pop(token_i)
@@ -875,6 +1043,20 @@ def main() -> int | None:
                 blue_active_token_i = None
             elif blue_active_token_i > token_i:
                 blue_active_token_i -= 1
+
+        fixed_sleep_batch: list[int] = []
+        for ti in blue_sleep_batch_token_ids:
+            if ti == token_i:
+                continue
+            fixed_sleep_batch.append(ti - 1 if ti > token_i else ti)
+        blue_sleep_batch_token_ids = fixed_sleep_batch
+
+        fixed_stun_recovered: set[int] = set()
+        for ti in blue_stun_recovered_this_turn:
+            if ti == token_i:
+                continue
+            fixed_stun_recovered.add(ti - 1 if ti > token_i else ti)
+        blue_stun_recovered_this_turn = fixed_stun_recovered
 
         fixed_meeting: set[int] = set()
         for i in current_meeting_blue_ids:
@@ -955,11 +1137,14 @@ def main() -> int | None:
     def _apply_edge_barricade(edge_idx: int) -> None:
         barricade_edges.add(edge_idx % len(board_path))
 
-    def _current_meeting_blue_ids() -> set[int]:
+    def _current_meeting_blue_ids(excluded_ids: set[int] | None = None) -> set[int]:
+        blocked = excluded_ids if excluded_ids is not None else set()
         return {
             i
             for i, bpos in enumerate(blue_tokens)
-            if (token_position, bpos) in MEET_PAIRS_0B and (not _is_blue_stunned_visual(i))
+            if (token_position, bpos) in MEET_PAIRS_0B
+            and (i not in blocked)
+            and (not _is_blue_stunned_visual(i))
         }
 
     def _build_lightning_path(
@@ -1046,31 +1231,35 @@ def main() -> int | None:
         nonlocal current_meeting_blue_ids, meet_banner_until_ms
         nonlocal board_game_over, board_game_over_text
         nonlocal is_charging, is_resolving, current_gauge, gauge_dir
-        nonlocal pending_t2_plus_rolls
         nonlocal blue_remove_effects, pending_remove_token_ids, blue_remove_return_phase
         nonlocal blue_remove_duration_ms
         nonlocal deck_preview_lines, combat_template_state, board_player_hp
         if not new_meets:
             return False
-
-        t2_plus_rolls = max(0, int(pending_t2_plus_rolls))
-        pending_t2_plus_rolls = 0
+        candidate_ids = sorted(i for i in new_meets if 0 <= i < len(blue_tokens))
+        if not candidate_ids:
+            return False
+        if len(candidate_ids) > COMBAT_MAX_ENCOUNTER_ENEMIES:
+            encounter_ids = sorted(random.sample(candidate_ids, COMBAT_MAX_ENCOUNTER_ENEMIES))
+        else:
+            encounter_ids = candidate_ids
         encounter_types = [
             blue_token_types[i] if 0 <= i < len(blue_token_types) else _random_enemy_unit_type()
-            for i in sorted(new_meets)
+            for i in encounter_ids
         ]
         combat_player_profile = dict(COMBAT_PLAYER_PROFILE)
         max_hp = float(combat_player_profile.get("max_hp", 500.0) or 500.0)
         combat_player_profile["current_hp"] = max(0.0, min(max_hp, float(board_player_hp)))
         player_state_out: dict[str, object] = {}
+        draw_loading_overlay("Loading...")
         result = run_meet_combat(
-            enemy_count=len(new_meets),
+            enemy_count=len(encounter_ids),
             enemy_types=encounter_types,
             seed=random.randrange(1 << 30),
             start_enhance_rolls=COMBAT_MEET_ENHANCE_ROLLS,
             initial_draw=COMBAT_START_HAND,
-            min_enhance_tier=(COMBAT_T2_PLUS_TIER if t2_plus_rolls > 0 else 0),
-            min_enhance_tier_rolls=t2_plus_rolls,
+            min_enhance_tier=0,
+            min_enhance_tier_rolls=0,
             width=screen_w,
             height=screen_h,
             player_profile=combat_player_profile,
@@ -1078,6 +1267,8 @@ def main() -> int | None:
             template_state=combat_template_state,
             template_state_out=combat_template_state,
             player_state_out=player_state_out,
+            enhance_gacha_state=combat_enhance_gacha_state,
+            enhance_gacha_state_out=combat_enhance_gacha_state,
         )
         if "hp" in player_state_out:
             board_player_hp = max(0.0, float(player_state_out["hp"]))
@@ -1088,14 +1279,14 @@ def main() -> int | None:
         pg.event.clear()
 
         if result is True:
-            remove_targets = sorted(i for i in new_meets if 0 <= i < len(blue_tokens))
+            remove_targets = [i for i in encounter_ids if 0 <= i < len(blue_tokens)]
             reward_rolls = max(0, len(remove_targets) * COMBAT_ENHANCE_ROLLS_PER_KILL)
             if reward_rolls > 0:
-                t2_plus_reward_rolls = min(reward_rolls, t2_plus_rolls) if t2_plus_rolls > 0 else 0
+                draw_loading_overlay("Loading...")
                 updated_deck = run_enhancement_choices(
                     enhance_rolls=reward_rolls,
-                    min_enhance_tier=(COMBAT_T2_PLUS_TIER if t2_plus_reward_rolls > 0 else 0),
-                    min_enhance_tier_rolls=t2_plus_reward_rolls,
+                    min_enhance_tier=0,
+                    min_enhance_tier_rolls=0,
                     seed=random.randrange(1 << 30),
                     width=screen_w,
                     height=screen_h,
@@ -1103,6 +1294,8 @@ def main() -> int | None:
                     unit_archetypes=COMBAT_UNIT_ARCHETYPES,
                     template_state=combat_template_state,
                     template_state_out=combat_template_state,
+                    enhance_gacha_state=combat_enhance_gacha_state,
+                    enhance_gacha_state_out=combat_enhance_gacha_state,
                 )
                 if updated_deck:
                     deck_preview_lines = list(updated_deck)
@@ -1140,9 +1333,9 @@ def main() -> int | None:
         gauge_dir = 1
         return True
 
-    def _update_meet_events(now_ms: int) -> set[int]:
+    def _update_meet_events(now_ms: int, excluded_ids: set[int] | None = None) -> set[int]:
         nonlocal meet_banner_until_ms, current_meeting_blue_ids
-        meeting_now = _current_meeting_blue_ids()
+        meeting_now = _current_meeting_blue_ids(excluded_ids=excluded_ids)
         new_meets = meeting_now - current_meeting_blue_ids
         if new_meets:
             meet_banner_until_ms = now_ms + int(900 / ANIMATION_SPEED)
@@ -1157,20 +1350,29 @@ def main() -> int | None:
         current_meeting_blue_ids = meeting_now
         return new_meets
 
-    def _try_begin_meet(now_ms: int, return_phase: str) -> bool:
-        return _begin_meet_lightning(_update_meet_events(now_ms), now_ms, return_phase)
+    def _try_begin_meet(now_ms: int, return_phase: str, excluded_ids: set[int] | None = None) -> bool:
+        return _begin_meet_lightning(_update_meet_events(now_ms, excluded_ids=excluded_ids), now_ms, return_phase)
 
     def _try_begin_player_meet(now_ms: int) -> bool:
         return _try_begin_meet(now_ms, "PlayerPostMove")
 
+    def _try_begin_enemy_meet(now_ms: int) -> bool:
+        # 적 턴 종료 후 일괄 교전. 이번 턴에 기절이 막 풀린 적은 즉시 교전에서 제외한다.
+        return _try_begin_meet(now_ms, "Throw", excluded_ids=set(blue_stun_recovered_this_turn))
+
+    def _finalize_enemy_turn_with_meet(now_ms: int) -> bool:
+        started = _try_begin_enemy_meet(now_ms)
+        blue_stun_recovered_this_turn.clear()
+        return started
+
     def _resolve_player_landed_cell(now_ms: int) -> None:
         nonlocal current_phase, phase_timer_start_ms, screen
-        nonlocal t2_plus_counter, pending_t2_plus_rolls, t2_plus_banner_until_ms, t2_plus_banner_text
+        nonlocal t2_plus_counter, t2_plus_banner_until_ms, t2_plus_banner_text
         nonlocal deck_preview_lines, combat_template_state
         landed_cell = token_position + 1  # 1-based
         if landed_cell == ABILITY_T2_ENHANCE_CELL_1B:
             gain_rolls = t2_plus_counter
-            pending_t2_plus_rolls += gain_rolls
+            draw_loading_overlay("Loading...")
             updated_deck = run_enhancement_choices(
                 enhance_rolls=gain_rolls,
                 min_enhance_tier=COMBAT_T2_PLUS_TIER,
@@ -1182,6 +1384,8 @@ def main() -> int | None:
                 unit_archetypes=COMBAT_UNIT_ARCHETYPES,
                 template_state=combat_template_state,
                 template_state_out=combat_template_state,
+                enhance_gacha_state=combat_enhance_gacha_state,
+                enhance_gacha_state_out=combat_enhance_gacha_state,
             )
             if updated_deck:
                 deck_preview_lines = list(updated_deck)
@@ -1217,6 +1421,7 @@ def main() -> int | None:
         phase_timer_start_ms = now_ms
 
     # 게임 시작 전에 강화 선택 10회를 먼저 진행한다.
+    draw_loading_overlay("Loading...")
     deck_preview_lines = run_enhancement_choices(
         enhance_rolls=COMBAT_PRE_GAME_ENHANCE_ROLLS,
         seed=random.randrange(1 << 30),
@@ -1226,6 +1431,8 @@ def main() -> int | None:
         unit_archetypes=COMBAT_UNIT_ARCHETYPES,
         template_state=combat_template_state,
         template_state_out=combat_template_state,
+        enhance_gacha_state=combat_enhance_gacha_state,
+        enhance_gacha_state_out=combat_enhance_gacha_state,
     )
     if not deck_preview_lines:
         deck_preview_lines = ["덱 정보가 없습니다."]
@@ -1242,6 +1449,15 @@ def main() -> int | None:
         can_throw = current_phase == "Throw" and (not is_resolving) and move_left == 0
         hovered = button_rect.collidepoint(mouse_pos) and can_throw
         deck_hovered = deck_button_rect.collidepoint(mouse_pos)
+        enemy_anim_active = _is_enemy_animation_phase(current_phase)
+        if (not enemy_anim_active) and skip_confirm_armed:
+            skip_confirm_armed = False
+        skip_hovered = (
+            skip_button_rect.collidepoint(mouse_pos)
+            and enemy_anim_active
+            and (not board_game_over)
+            and (not deck_panel_open)
+        )
 
         for event in pg.event.get():
             if event.type == pg.QUIT:
@@ -1284,6 +1500,19 @@ def main() -> int | None:
                     resolve_next_shuffle_ms = resolve_start_ms
                     continue
             elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+                if skip_button_rect.collidepoint(event.pos) and (not deck_panel_open):
+                    if enemy_anim_active and (not board_game_over):
+                        now_skip = pg.time.get_ticks()
+                        if skip_confirm_armed:
+                            _skip_enemy_animation_now(now_skip)
+                            skip_confirm_armed = False
+                        else:
+                            skip_confirm_armed = True
+                    else:
+                        skip_confirm_armed = False
+                    continue
+                if skip_confirm_armed:
+                    skip_confirm_armed = False
                 if deck_button_rect.collidepoint(event.pos):
                     deck_panel_open = not deck_panel_open
                     if deck_panel_open:
@@ -1373,6 +1602,7 @@ def main() -> int | None:
                 gauge_dir = 1
 
                 # 플레이어가 주사위를 1회 던질 때마다 파란 말 이동 계획(실제 이동은 플레이어 이후).
+                blue_stun_recovered_this_turn.clear()
                 if blue_tokens:
                     ordered = sorted(range(len(blue_tokens)), key=lambda i: blue_tokens[i], reverse=True)
                     blue_move_queue = [
@@ -1404,7 +1634,12 @@ def main() -> int | None:
             if step_from_position in barricade_edges:
                 barricade_edges.discard(step_from_position)
                 move_left = 0
-                _resolve_player_landed_cell(now_ms)
+                player_bounce_from_position = step_from_position
+                player_bounce_to_position = step_to_position
+                player_bounce_start_ms = now_ms
+                player_bounce_duration_ms = max(1, int(BARRICADE_BOUNCE_BASE_MS / ANIMATION_SPEED))
+                current_phase = "PlayerBarricadeBounce"
+                phase_timer_start_ms = now_ms
                 continue
             elapsed = max(0, now_ms - step_start_ms)
             step_t = min(1.0, elapsed / float(max(1, step_duration_ms)))
@@ -1433,6 +1668,12 @@ def main() -> int | None:
                     step_start_ms = now_ms
                     step_duration_ms = compute_step_duration_ms(move_total, move_left)
 
+        if current_phase == "PlayerBarricadeBounce":
+            now_ms = pg.time.get_ticks()
+            if now_ms - player_bounce_start_ms >= player_bounce_duration_ms:
+                token_position = player_bounce_from_position
+                _resolve_player_landed_cell(now_ms)
+
         if current_phase == "PlayerPostMove":
             now_ms = pg.time.get_ticks()
             if now_ms - phase_timer_start_ms >= player_post_move_ms:
@@ -1443,6 +1684,8 @@ def main() -> int | None:
             if now_ms - phase_timer_start_ms >= _enemy_phase_duration(enemy_pre_move_base_ms, min_ms=80):
                 if blue_active_token_i is None:
                     _begin_next_blue_pre_move(now_ms)
+                    if current_phase == "Throw":
+                        _finalize_enemy_turn_with_meet(now_ms)
                 else:
                     current_phase = "InnerMove"
                     blue_active_from = blue_tokens[blue_active_token_i]
@@ -1458,9 +1701,9 @@ def main() -> int | None:
 
         if current_phase == "BlueStun":
             now_ms = pg.time.get_ticks()
-            if now_ms - phase_timer_start_ms >= blue_stun_duration_ms:
-                current_phase = "BluePostMove"
-                phase_timer_start_ms = now_ms
+            _begin_next_blue_pre_move(now_ms)
+            if current_phase == "Throw":
+                _finalize_enemy_turn_with_meet(now_ms)
 
         if current_phase == "BlueRemoveEffect":
             now_ms = pg.time.get_ticks()
@@ -1505,14 +1748,15 @@ def main() -> int | None:
                     blue_active_start_ms = now_ms
                     blue_active_duration_ms = _enemy_phase_duration(enemy_move_base_ms, min_ms=36)
                 else:
-                    if not _begin_meet_lightning(_update_meet_events(now_ms), now_ms, "BluePostMove"):
-                        current_phase = "BluePostMove"
-                        phase_timer_start_ms = now_ms
+                    current_phase = "BluePostMove"
+                    phase_timer_start_ms = now_ms
 
         if current_phase == "BluePostMove":
             now_ms = pg.time.get_ticks()
             if now_ms - phase_timer_start_ms >= _enemy_phase_duration(enemy_post_move_base_ms, min_ms=60):
                 _begin_next_blue_pre_move(now_ms)
+                if current_phase == "Throw":
+                    _finalize_enemy_turn_with_meet(now_ms)
 
         # Draw
         draw_gradient(screen, screen_w, screen_h)
@@ -1670,11 +1914,25 @@ def main() -> int | None:
             from_xy = board_path[step_from_position]
             to_xy = board_path[step_to_position]
             token_x, token_y = parabolic_step_position(from_xy, to_xy, t)
+        elif current_phase == "PlayerBarricadeBounce":
+            now_ms = pg.time.get_ticks()
+            elapsed = max(0, now_ms - player_bounce_start_ms)
+            p = min(1.0, elapsed / float(max(1, player_bounce_duration_ms)))
+            if p <= 0.5:
+                q = ease_out_cubic(p / 0.5)
+                travel_t = BARRICADE_BOUNCE_REACH_T * q
+            else:
+                q = ease_in_cubic((p - 0.5) / 0.5)
+                travel_t = BARRICADE_BOUNCE_REACH_T * (1.0 - q)
+            from_xy = board_path[player_bounce_from_position]
+            to_xy = board_path[player_bounce_to_position]
+            token_x, token_y = parabolic_step_position(from_xy, to_xy, travel_t)
         else:
             token_x, token_y = board_path[token_position]
+        now_ms_arrow = pg.time.get_ticks()
         # 보드 위 플레이어 말을 더 키우고, 지정 좌표의 중심에 정확히 맞춘다.
         player_size = max(93, int(board_rect.w * 0.1575))
-        player_img = get_unit_image("player", player_size)
+        player_img = get_unit_image("Player", player_size)
         player_rect = player_img.get_rect()
         player_visual = player_img.get_bounding_rect(min_alpha=1)
         if player_visual.w > 0 and player_visual.h > 0:
@@ -1684,6 +1942,14 @@ def main() -> int | None:
         else:
             player_rect.center = (int(round(token_x)), int(round(token_y)))
         screen.blit(player_img, player_rect.topleft)
+        if (current_phase in ("PlayerPreMove", "Move")) and move_left > 0:
+            arrow_size = max(18, int(player_size * 0.34))
+            arrow_img = get_unit_arrow_image(arrow_size)
+            bob = math.sin(now_ms_arrow * 0.0105) * 6.0
+            arrow_rect = arrow_img.get_rect(
+                midbottom=(int(round(token_x)), int(round(player_rect.top - 6 + bob)))
+            )
+            screen.blit(arrow_img, arrow_rect.topleft)
 
         # Center cluster panel (button, bar, dice) - semi-transparent
         cluster_panel = pg.Surface(cluster_rect.size, pg.SRCALPHA)
@@ -1820,6 +2086,23 @@ def main() -> int | None:
                     spin.set_alpha(172)
                     screen.blit(spin, spin.get_rect(center=token_rect.center))
 
+        if current_phase in ("BluePreMove", "InnerMove") and blue_active_token_i is not None and (0 <= blue_active_token_i < len(blue_tokens)):
+            if current_phase == "InnerMove" and blue_active_pos is not None:
+                bx, by = blue_active_pos
+                active_size = blue_size
+            else:
+                bx, by, active_size = blue_layout.get(
+                    blue_active_token_i,
+                    (inner_path[blue_tokens[blue_active_token_i]][0], inner_path[blue_tokens[blue_active_token_i]][1], blue_size),
+                )
+            arrow_size = max(14, int(active_size * 0.44))
+            arrow_img = get_unit_arrow_image(arrow_size)
+            bob = math.sin((now_ms_arrow * 0.0105) + (blue_active_token_i * 0.45)) * 6.0
+            arrow_rect = arrow_img.get_rect(
+                midbottom=(int(round(bx)), int(round(by - (active_size * 0.56) + bob)))
+            )
+            screen.blit(arrow_img, arrow_rect.topleft)
+
         if current_phase == "StunHammer" and stun_hammer_effect is not None:
             picked_cell = int(stun_hammer_effect.get("cell_idx", -1))
             if 0 <= picked_cell < len(inner_path):
@@ -1830,7 +2113,7 @@ def main() -> int | None:
                     p = min(1.0, elapsed / float(max(1, stun_hammer_swing_ms)))
                     # 천천히 시작해서 점점 빨라지며 내려치도록 가속 보간을 사용한다.
                     eased = ease_in_cubic(p)
-                    # 화면 기준 위쪽에서 내려치도록 시작 각도 부호를 반전한다.
+                    # 60도 위에서 시작해 0도로 내려친다.
                     swing_angle = -HAMMER_SWING_START_DEG * (1.0 - eased)
                     blit_hammer_swing(
                         "hitting",
@@ -1921,22 +2204,27 @@ def main() -> int | None:
             screen.blit(lightning_fx, (0, 0))
 
         # 블루 수면 Z 애니메이션
-        if current_phase == "BlueSleep" and blue_active_token_i is not None:
-            bx, by = inner_path[blue_tokens[blue_active_token_i]]
+        if current_phase == "BlueSleep":
             sleep_elapsed = max(0, pg.time.get_ticks() - phase_timer_start_ms)
             sleep_p = min(1.0, sleep_elapsed / float(max(1, blue_sleep_duration_ms)))
-            for i, phase in enumerate((0.0, 0.32, 0.64)):
-                p = sleep_p - phase
-                if p <= 0.0:
-                    continue
-                p = min(1.0, p / 0.36)
-                zz_alpha = int(170 * (1.0 - p))
-                zz_size = int(16 + (12 * p))
-                zz = load_font(zz_size, "keriskedu_bold").render("Z", True, (220, 239, 255))
-                zz.set_alpha(max(0, zz_alpha))
-                z_y = by - blue_size - (26 * p) - (i * 3)
-                z_x = bx + (i * 8)
-                screen.blit(zz, zz.get_rect(center=(int(z_x), int(z_y))))
+            sleep_targets = [ti for ti in blue_sleep_batch_token_ids if 0 <= ti < len(blue_tokens)]
+            if (not sleep_targets) and blue_active_token_i is not None and (0 <= blue_active_token_i < len(blue_tokens)):
+                sleep_targets = [blue_active_token_i]
+            for order, token_i in enumerate(sleep_targets):
+                bx, by = inner_path[blue_tokens[token_i]]
+                phase_shift = (order % 3) * 0.08
+                for i, phase in enumerate((0.0, 0.32, 0.64)):
+                    p = sleep_p - phase - phase_shift
+                    if p <= 0.0:
+                        continue
+                    p = min(1.0, p / 0.36)
+                    zz_alpha = int(170 * (1.0 - p))
+                    zz_size = int(16 + (12 * p))
+                    zz = load_font(zz_size, "keriskedu_bold").render("Z", True, (220, 239, 255))
+                    zz.set_alpha(max(0, zz_alpha))
+                    z_y = by - blue_size - (26 * p) - (i * 3)
+                    z_x = bx + (i * 8)
+                    screen.blit(zz, zz.get_rect(center=(int(z_x), int(z_y))))
 
         # Gauge
         pg.draw.rect(screen, BAR_BG, gauge_rect, border_radius=8)
@@ -1967,6 +2255,8 @@ def main() -> int | None:
                 active_enemy_name = str(blue_token_types[blue_active_token_i])
             if current_phase == "Move":
                 button_text = "Moving..."
+            elif current_phase == "PlayerBarricadeBounce":
+                button_text = "Blocked!"
             elif current_phase == "PlayerPreMove":
                 button_text = "Player Ready..."
             elif current_phase == "PlayerPostMove":
@@ -1976,9 +2266,13 @@ def main() -> int | None:
             elif current_phase == "InnerMove":
                 button_text = f"{active_enemy_name} Moving..."
             elif current_phase == "BlueSleep":
-                button_text = f"{active_enemy_name} sleeping..."
+                sleep_count = len([ti for ti in blue_sleep_batch_token_ids if 0 <= ti < len(blue_tokens)])
+                if sleep_count <= 0:
+                    sleep_count = 1 if (blue_active_token_i is not None and 0 <= blue_active_token_i < len(blue_tokens)) else 0
+                sleep_count = max(1, sleep_count)
+                button_text = f"{sleep_count} sleeping..."
             elif current_phase == "BlueStun":
-                button_text = f"{active_enemy_name} stunned..."
+                button_text = "..."
             elif current_phase == "BlueRemoveEffect":
                 button_text = f"{active_enemy_name} removing..."
             elif current_phase == "BluePreMove":
@@ -2020,6 +2314,15 @@ def main() -> int | None:
             deck_hovered,
             False,
             disabled=False,
+        )
+        draw_button(
+            screen,
+            skip_button_rect,
+            ("Skip?" if skip_confirm_armed else "Skip"),
+            font_deck_button,
+            skip_hovered,
+            False,
+            disabled=(not enemy_anim_active) or board_game_over or deck_panel_open,
         )
 
         # Dice
@@ -2080,5 +2383,16 @@ def main() -> int | None:
     return last_total
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Dice Duals board game")
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="애니메이션 시간을 거의 0초 수준으로 줄입니다.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = _parse_args()
+    main(fast=bool(args.fast))

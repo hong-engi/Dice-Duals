@@ -52,13 +52,13 @@ TIER_COLOR_BY_INDEX: Dict[int, Tuple[int, int, int]] = {
     6: (255, 104, 104),   # t6: red
 }
 DEFAULT_UNIT_ARCHETYPES: Dict[str, Dict[str, Any]] = {
-    "wolf": {"name": "늑대", "max_hp": 300.0, "attack": 30.0, "armor": 20.0},
-    "archer": {"name": "궁수", "max_hp": 200.0, "attack": 60.0, "armor": 0.0},
-    "mage": {"name": "마법사", "max_hp": 50.0, "attack": 150.0, "armor": 0.0},
+    "Wolf": {"name": "늑대", "max_hp": 300.0, "attack": 30.0, "armor": 20.0},
+    "Archer": {"name": "궁수", "max_hp": 200.0, "attack": 60.0, "armor": 0.0},
+    "Mage": {"name": "마법사", "max_hp": 50.0, "attack": 150.0, "armor": 0.0},
 }
 DEFAULT_PLAYER_PROFILE: Dict[str, Any] = {
-    "unit_id": "player",
-    "unit_key": "player",
+    "unit_id": "Player",
+    "unit_key": "Player",
     "name": "플레이어",
     "max_hp": 500.0,
     "attack": 50.0,
@@ -66,6 +66,21 @@ DEFAULT_PLAYER_PROFILE: Dict[str, Any] = {
     "shield_power": 50.0,
 }
 ENEMY_REMOVE_EFFECT_MS = 650.0
+ENH_CHOICE_INTRO_MS = 320.0
+ENH_CHOICE_SELECT_MS = 280.0
+ENEMY_MAX_ROWS = 4
+ENEMY_MAX_PER_ROW = 2
+ENEMY_MAX_IN_ENCOUNTER = ENEMY_MAX_ROWS * ENEMY_MAX_PER_ROW
+ENEMY_FRONTLINE_PRIORITY: Dict[str, int] = {
+    "wolf": 1,
+    "archer": 2,
+    "mage": 3,
+}
+ENEMY_ATTACK_RANGE: Dict[str, int] = {
+    "wolf": 1,
+    "archer": 3,
+    "mage": 4,
+}
 
 
 def _tier_color(tier_idx: int) -> Tuple[int, int, int]:
@@ -148,6 +163,7 @@ class CombatUI:
         player_profile: Optional[Dict[str, Any]] = None,
         unit_archetypes: Optional[Dict[str, Dict[str, Any]]] = None,
         initial_template_state: Optional[List[Dict[str, Any]]] = None,
+        initial_enhance_gacha_state: Optional[Dict[str, Any]] = None,
     ) -> None:
         pygame.init()
         pygame.display.set_caption("Dice Duals - Combat UI")
@@ -185,8 +201,8 @@ class CombatUI:
         if player_profile:
             raw_player_profile.update(player_profile)
         self.player_profile: Dict[str, Any] = {
-            "unit_id": str(raw_player_profile.get("unit_id", "player")),
-            "unit_key": str(raw_player_profile.get("unit_key", "player") or "player"),
+            "unit_id": str(raw_player_profile.get("unit_id", "Player")),
+            "unit_key": str(raw_player_profile.get("unit_key", "Player") or "Player"),
             "name": str(raw_player_profile.get("name", "플레이어")),
             "max_hp": float(raw_player_profile.get("max_hp", 500.0)),
             "current_hp": float(raw_player_profile.get("current_hp", raw_player_profile.get("max_hp", 500.0))),
@@ -194,7 +210,7 @@ class CombatUI:
             "armor": float(raw_player_profile.get("armor", 20.0)),
             "shield_power": float(raw_player_profile.get("shield_power", 50.0)),
         }
-        self.player_unit_key = str(self.player_profile.get("unit_key", "player") or "player")
+        self.player_unit_key = str(self.player_profile.get("unit_key", "Player") or "Player")
         unit_image_keys = sorted({self.player_unit_key, *self.enemy_unit_keys})
         self.unit_image_raw: Dict[str, Optional[pygame.Surface]] = {
             key: self._load_image(os.path.join("images", "units", f"{key}.png"))
@@ -245,6 +261,7 @@ class CombatUI:
         )
         self.rng = random.Random(seed)
         self.initial_template_state = list(initial_template_state or [])
+        self.initial_enhance_gacha_state = dict(initial_enhance_gacha_state or {})
 
         self.running = True
         self.logs: List[str] = []
@@ -256,7 +273,7 @@ class CombatUI:
 
         self.turn = 1
         self.actions_left = 0
-        self.phase = "player"
+        self.phase = "Player"
         self.game_over = False
         self.win = False
         self.selected_card_index: Optional[int] = None
@@ -275,6 +292,10 @@ class CombatUI:
         self.enh_total_rolls = 0
         self.enh_roll_index = 1
         self.enh_choices: List[Dict[str, Any]] = []
+        self.enh_choice_intro_start_ms = float(pygame.time.get_ticks())
+        self.enh_choice_hover_anim: List[float] = []
+        self.enh_choice_select_anim: Optional[Dict[str, Any]] = None
+        self.enh_pending_choice_index: Optional[int] = None
         self.enh_auto = False
         self.enh_show_pity = False
         self.enh_logs: List[str] = []
@@ -386,7 +407,7 @@ class CombatUI:
         prefix = enemy.unit_id.split("_", 1)[0].lower()
         if prefix in self.unit_archetypes:
             return prefix
-        return self.enemy_unit_keys[0] if self.enemy_unit_keys else "wolf"
+        return self.enemy_unit_keys[0] if self.enemy_unit_keys else "Wolf"
 
     def new_game(self) -> None:
         if self._enh_rng_backup is not None:
@@ -433,7 +454,7 @@ class CombatUI:
         self.drag_card_mouse_pos = (0, 0)
         self.drag_card_start_pos = (0, 0)
         self.drag_card_moved = False
-        self.phase = "player"
+        self.phase = "Player"
         self.game_over = False
         self.win = False
         self.turn = 1
@@ -456,6 +477,26 @@ class CombatUI:
             "shield": float(max(0.0, self.player.state.shield)),
         }
 
+    def export_enhance_gacha_state(self) -> Dict[str, Any]:
+        if self.enh_gacha is None:
+            return {"fail_counts": []}
+        return {"fail_counts": [int(max(0, x)) for x in self.enh_gacha.fail_counts]}
+
+    def _restore_enhance_gacha_state(self) -> None:
+        if self.enh_gacha is None:
+            return
+        raw = self.initial_enhance_gacha_state.get("fail_counts")
+        if not isinstance(raw, (list, tuple)):
+            return
+        restored = [0 for _ in self.enh_gacha.fail_counts]
+        limit = min(len(restored), len(raw))
+        for i in range(limit):
+            try:
+                restored[i] = max(0, int(raw[i]))
+            except Exception:
+                restored[i] = 0
+        self.enh_gacha.fail_counts = restored
+
     def _build_enemy_rows_unique(
         self,
         enemy_count: Optional[int] = None,
@@ -469,6 +510,7 @@ class CombatUI:
             if enemy_count is not None
             else (len(planned_types) if planned_types else default_count)
         )
+        target_count = min(ENEMY_MAX_IN_ENCOUNTER, target_count)
         if len(planned_types) < target_count:
             while len(planned_types) < target_count:
                 if self.enemy_unit_keys:
@@ -476,7 +518,20 @@ class CombatUI:
                 else:
                     break
         else:
-            planned_types = planned_types[:target_count]
+            if len(planned_types) > target_count:
+                planned_types = self.rng.sample(planned_types, target_count)
+            else:
+                planned_types = planned_types[:target_count]
+
+        # 선두 수치가 작을수록 앞 열에 선다.
+        # wolf(1) -> archer(2) -> mage(3), 그 외 타입은 뒤로 보낸다.
+        planned_types = [
+            unit_key
+            for _, unit_key in sorted(
+                enumerate(planned_types),
+                key=lambda it: (ENEMY_FRONTLINE_PRIORITY.get(str(it[1]).lower(), 99), it[0]),
+            )
+        ]
 
         all_enemies: List[Enemy] = []
         for idx, unit_key in enumerate(planned_types, start=1):
@@ -492,20 +547,22 @@ class CombatUI:
                 )
             )
 
-        row_pattern = [max(1, int(x)) for x in (self.cfg.enemy_row_counts or [target_count])]
         rows: List[List[Enemy]] = []
-        cursor = 0
-        row_idx = 0
-        while cursor < len(all_enemies):
-            cap = row_pattern[row_idx % len(row_pattern)]
-            rows.append(all_enemies[cursor:cursor + cap])
-            cursor += cap
-            row_idx += 1
+        for row_i in range(ENEMY_MAX_ROWS):
+            start = row_i * ENEMY_MAX_PER_ROW
+            if start >= len(all_enemies):
+                break
+            rows.append(all_enemies[start:start + ENEMY_MAX_PER_ROW])
         return rows
+
+    def _enemy_attack_range(self, enemy: Enemy) -> int:
+        kind = self._enemy_kind(enemy)
+        return max(1, int(ENEMY_ATTACK_RANGE.get(kind, 1)))
 
     def _begin_enhancement_phase(self) -> None:
         self.mode = "enhance"
         self.enh_gacha = EnhanceGacha()
+        self._restore_enhance_gacha_state()
         self.enh_auto = False
         self.enh_show_pity = False
         self.enh_logs = []
@@ -560,7 +617,7 @@ class CombatUI:
         self.mode = "battle"
         self.turn = 1
         self.actions_left = self.cfg.cards_per_turn
-        self.phase = "player"
+        self.phase = "Player"
         self.game_over = False
         self.win = False
         self.pending_attack = None
@@ -577,7 +634,7 @@ class CombatUI:
         forced_idx = self._enh_forced_tier_index()
         if forced_idx is None:
             return ""
-        return f" - {TIERS_NAME[Tier(forced_idx)]} 확정"
+        return f" - {TIERS_NAME[Tier(forced_idx)]} 이상"
 
     def _active_forced_min_tier(self) -> Optional[int]:
         if self.forced_min_enhance_tier is None:
@@ -626,10 +683,11 @@ class CombatUI:
             return
 
         slot_count = max(1, int(self.cfg.start_enhance_choices))
-        picks = self.enh_gacha.preview_choice_tiers(n_choices=slot_count)
         floor_tier = self._active_forced_min_tier()
-        if floor_tier is not None:
-            picks = [max(floor_tier, int(idx)) for idx in picks]
+        picks = self.enh_gacha.preview_choice_tiers(
+            n_choices=slot_count,
+            extra_min_tier=(int(floor_tier) if floor_tier is not None else -1),
+        )
         self.enh_choices = []
         used_sigs: set[Tuple[Any, ...]] = set()
 
@@ -697,6 +755,10 @@ class CombatUI:
             if selected_plan is not None and selected_sig is not None:
                 used_sigs.add(selected_sig)
                 self.enh_choices.append(selected_plan)
+        self.enh_choice_intro_start_ms = float(pygame.time.get_ticks())
+        self.enh_choice_hover_anim = [0.0 for _ in self.enh_choices]
+        self.enh_choice_select_anim = None
+        self.enh_pending_choice_index = None
 
     def _best_enhance_choice_index(self) -> int:
         if not self.enh_choices:
@@ -705,7 +767,24 @@ class CombatUI:
         best_indices = [i for i, p in enumerate(self.enh_choices) if int(p.get("idx", 0)) == best_tier]
         return self.rng.choice(best_indices)
 
-    def _commit_enhance_choice(self, choice_index: int) -> None:
+    def _commit_enhance_choice(self, choice_index: int, animate: bool = True) -> None:
+        if self.enh_gacha is None or self.enh_engine is None:
+            return
+        if not (0 <= choice_index < len(self.enh_choices)):
+            return
+        if animate and self.mode == "enhance":
+            if self.enh_choice_select_anim is not None or self.enh_pending_choice_index is not None:
+                return
+            self.enh_pending_choice_index = int(choice_index)
+            self.enh_choice_select_anim = {
+                "start_ms": float(pygame.time.get_ticks()),
+                "duration_ms": float(ENH_CHOICE_SELECT_MS),
+                "selected_index": int(choice_index),
+            }
+            return
+        self._apply_enhance_choice(choice_index)
+
+    def _apply_enhance_choice(self, choice_index: int) -> None:
         if self.enh_gacha is None or self.enh_engine is None:
             return
         if not (0 <= choice_index < len(self.enh_choices)):
@@ -749,11 +828,33 @@ class CombatUI:
         self._build_enhancement_choices()
 
     def _run_auto_enhance(self) -> None:
+        if self.enh_choice_select_anim is not None or self.enh_pending_choice_index is not None:
+            return
         while self.mode == "enhance" and self.enh_auto and self.enh_roll_index <= self.enh_total_rolls:
             idx = self._best_enhance_choice_index()
-            self._commit_enhance_choice(idx)
+            self._commit_enhance_choice(idx, animate=False)
             if self.mode != "enhance":
                 break
+
+    def _update_enhance_choice_animation(self) -> None:
+        if self.mode != "enhance":
+            self.enh_choice_select_anim = None
+            self.enh_pending_choice_index = None
+            return
+        if self.enh_choice_select_anim is None or self.enh_pending_choice_index is None:
+            return
+        now_ms = float(pygame.time.get_ticks())
+        start_ms = float(self.enh_choice_select_anim.get("start_ms", now_ms))
+        duration_ms = max(1.0, float(self.enh_choice_select_anim.get("duration_ms", ENH_CHOICE_SELECT_MS)))
+        if now_ms - start_ms < duration_ms:
+            return
+
+        idx = int(self.enh_pending_choice_index)
+        self.enh_choice_select_anim = None
+        self.enh_pending_choice_index = None
+        self._apply_enhance_choice(idx)
+        if self.mode == "enhance" and self.enh_auto and self.enh_choice_select_anim is None:
+            self._run_auto_enhance()
 
     def _enh_log_collapsed_rect(self) -> pygame.Rect:
         return pygame.Rect(18, self.height - 46, 118, 30)
@@ -824,12 +925,25 @@ class CombatUI:
                 self.running = False
                 break
             if stop_on_game_over and self.mode == "battle" and self.game_over:
+                if self.win and self._has_active_enemy_remove_effects():
+                    continue
                 encounter_result = bool(self.win)
                 self.running = False
                 break
         if quit_on_exit:
             pygame.quit()
         return encounter_result
+
+    def _has_active_enemy_remove_effects(self) -> bool:
+        if not self.enemy_remove_effects:
+            return False
+        now_ms = float(pygame.time.get_ticks())
+        for fx in self.enemy_remove_effects:
+            duration = max(1.0, float(fx.get("duration_ms", ENEMY_REMOVE_EFFECT_MS)))
+            elapsed = now_ms - float(fx.get("start_ms", now_ms))
+            if 0.0 <= elapsed <= duration:
+                return True
+        return False
 
     def _handle_events(self) -> None:
         for event in pygame.event.get():
@@ -875,10 +989,12 @@ class CombatUI:
                         pygame.K_KP3: 2,
                     }
                     if event.key in key_to_index:
+                        if self.enh_choice_select_anim is not None or self.enh_pending_choice_index is not None:
+                            return
                         idx = key_to_index[event.key]
                         if 0 <= idx < len(self.enh_choices):
                             self._commit_enhance_choice(idx)
-                            if self.mode == "enhance" and self.enh_auto:
+                            if self.mode == "enhance" and self.enh_auto and self.enh_choice_select_anim is None:
                                 self._run_auto_enhance()
                         return
                     if event.key == pygame.K_a:
@@ -927,7 +1043,7 @@ class CombatUI:
                             self.battle_log_scroll = max(0, len(self.logs) - max(1, self.battle_log_lines_per_page))
                         return
                 if event.key == pygame.K_SPACE:
-                    if self.mode == "battle" and self.phase == "player" and self.pending_attack is None and not self.game_over:
+                    if self.mode == "battle" and self.phase == "Player" and self.pending_attack is None and not self.game_over:
                         self._end_player_turn()
                     return
             if event.type == pygame.MOUSEWHEEL:
@@ -978,7 +1094,7 @@ class CombatUI:
         return key_map.get(key)
 
     def _handle_battle_card_hotkey(self, hot_idx: int) -> bool:
-        if self.mode != "battle" or self.game_over or self.phase != "player":
+        if self.mode != "battle" or self.game_over or self.phase != "Player":
             return False
         if self.pending_attack is not None:
             return False
@@ -1009,7 +1125,7 @@ class CombatUI:
             self.selected_card_index = None
 
     def _try_begin_card_drag(self, pos: Tuple[int, int]) -> bool:
-        if self.mode != "battle" or self.game_over or self.phase != "player":
+        if self.mode != "battle" or self.game_over or self.phase != "Player":
             return False
         if self.pending_attack is not None or self.battle_log_expanded:
             return False
@@ -1024,8 +1140,6 @@ class CombatUI:
                 self.drag_card_mouse_pos = pos
                 self.drag_card_start_pos = pos
                 self.drag_card_moved = False
-                self.selected_card_index = i
-                self.selected_unit_key = None
                 return True
         return False
 
@@ -1068,7 +1182,7 @@ class CombatUI:
         self._clear_card_drag()
         if drag_index is None:
             return
-        if self.mode != "battle" or self.game_over or self.phase != "player":
+        if self.mode != "battle" or self.game_over or self.phase != "Player":
             return
         if self.pending_attack is not None or self.actions_left <= 0:
             return
@@ -1099,7 +1213,7 @@ class CombatUI:
         unit_hit = self._unit_at_pos(pos)
         left_zone, right_zone, _ = self._battlefield_bounds()
         field_rect = left_zone.union(right_zone)
-        if (unit_hit is not None and unit_hit[0] == "player") or field_rect.collidepoint(pos):
+        if (unit_hit is not None and unit_hit[0] == "Player") or field_rect.collidepoint(pos):
             self._play_card(drag_index)
             return
 
@@ -1107,6 +1221,8 @@ class CombatUI:
         self.log("드래그 취소: 전장으로 드래그하면 사용")
 
     def _handle_enhance_click(self, pos: Tuple[int, int]) -> None:
+        if self.enh_choice_select_anim is not None or self.enh_pending_choice_index is not None:
+            return
         collapsed = self._enh_log_collapsed_rect()
         expanded = self._enh_log_expanded_rect()
         close_rect = pygame.Rect(expanded.right - 92, expanded.y + 10, 76, 28)
@@ -1128,7 +1244,7 @@ class CombatUI:
         for i, rect in enumerate(rects):
             if rect.collidepoint(pos):
                 self._commit_enhance_choice(i)
-                if self.mode == "enhance" and self.enh_auto:
+                if self.mode == "enhance" and self.enh_auto and self.enh_choice_select_anim is None:
                     self._run_auto_enhance()
                 return
 
@@ -1137,7 +1253,7 @@ class CombatUI:
             return
         if self.mode != "battle":
             return
-        if self.phase != "player":
+        if self.phase != "Player":
             return
 
         if self.pending_attack is not None:
@@ -1310,16 +1426,16 @@ class CombatUI:
         dx = pos[0] - cx
         dy = pos[1] - cy
         if (dx * dx + dy * dy) <= (r * r):
-            return ("player", self.player)
+            return ("Player", self.player)
         return None
 
     def _get_selected_unit(self) -> Optional[Tuple[str, Any]]:
         if self.selected_unit_key is None:
             return None
         k, uid = self.selected_unit_key
-        if k == "player":
+        if k == "Player":
             if self.player.is_alive:
-                return ("player", self.player)
+                return ("Player", self.player)
             return None
         if k == "enemy":
             for row in self.enemy_rows:
@@ -1336,7 +1452,7 @@ class CombatUI:
             lines.append(f"ATK {unit.attack.power:.1f}")
         if unit.defense.shield_power > 0:
             lines.append(f"방어력 {unit.defense.shield_power:.1f}")
-        if kind == "player":
+        if kind == "Player":
             base_armor, bonus_armor = self._player_armor_parts()
             if base_armor > 0 or bonus_armor > 0:
                 if bonus_armor > 0:
@@ -1351,7 +1467,7 @@ class CombatUI:
             dist = self._enemy_distance_map().get(unit.unit_id)
             if dist is not None:
                 lines.append(f"거리 {dist}")
-        if kind == "player":
+        if kind == "Player":
             lines.append(f"자원 {self.rt.resource}")
 
         bleed_turns = int(max(0, unit.state.tags.get("bleed_turns", 0)))
@@ -1450,7 +1566,7 @@ class CombatUI:
         return panel
 
     def _unit_rect(self, kind: str, unit: Any) -> pygame.Rect:
-        if kind == "player":
+        if kind == "Player":
             (cx, cy), r = self._player_shape()
             return pygame.Rect(cx - r, cy - r, r * 2, r * 2)
         if kind == "enemy":
@@ -1508,7 +1624,7 @@ class CombatUI:
         return best if best is not None else self._clamp_panel_rect(pygame.Rect(16, 16, w, h))
 
     def _selected_tooltip_anchor(self, kind: str, unit: Any) -> Tuple[int, int]:
-        if kind == "player":
+        if kind == "Player":
             (cx, cy), r = self._player_shape()
             return cx + r + 14, cy - r
         if kind == "enemy":
@@ -1532,7 +1648,219 @@ class CombatUI:
         x0 = max(margin_x, (self.width - total_w) // 2)
         return [pygame.Rect(x0 + i * (w + gap), top, w, h) for i in range(n)]
 
-    def _draw_wrapped(self, text: str, rect: pygame.Rect, font: pygame.font.Font, color: Tuple[int, int, int], max_lines: int) -> None:
+    def _mix_color(
+        self,
+        a: Tuple[int, int, int],
+        b: Tuple[int, int, int],
+        t: float,
+    ) -> Tuple[int, int, int]:
+        tt = max(0.0, min(1.0, float(t)))
+        return (
+            int(a[0] + (b[0] - a[0]) * tt),
+            int(a[1] + (b[1] - a[1]) * tt),
+            int(a[2] + (b[2] - a[2]) * tt),
+        )
+
+    def _blit_text_stroke(
+        self,
+        surface: pygame.Surface,
+        font: pygame.font.Font,
+        text: str,
+        pos: Tuple[int, int],
+        color: Tuple[int, int, int],
+        stroke_color: Tuple[int, int, int],
+        stroke_px: int = 1,
+    ) -> None:
+        sx, sy = int(pos[0]), int(pos[1])
+        stroke = max(0, int(stroke_px))
+        if stroke > 0:
+            stroke_surf = font.render(text, True, stroke_color)
+            for ox in range(-stroke, stroke + 1):
+                for oy in range(-stroke, stroke + 1):
+                    if ox == 0 and oy == 0:
+                        continue
+                    surface.blit(stroke_surf, (sx + ox, sy + oy))
+        surface.blit(font.render(text, True, color), (sx, sy))
+
+    def _enhance_hovered_choice_index(self, rects: List[pygame.Rect]) -> Optional[int]:
+        if self.enh_log_expanded:
+            return None
+        if self.enh_choice_select_anim is not None or self.enh_pending_choice_index is not None:
+            return None
+        mx, my = pygame.mouse.get_pos()
+        for i, rect in enumerate(rects):
+            if rect.collidepoint((mx, my)):
+                return i
+        return None
+
+    def _enhance_choice_style(self, tier_idx: int, hover_t: float) -> Dict[str, Tuple[int, int, int]]:
+        ht = max(0.0, min(1.0, float(hover_t)))
+        tier_col = _tier_color(tier_idx)
+        fill = self._mix_color(PANEL, tier_col, 0.16 + (0.13 * ht))
+        border = self._mix_color(BORDER, tier_col, 0.56 + (0.28 * ht))
+        title = self._mix_color(TEXT, tier_col, 0.28 + (0.30 * ht))
+        desc = self._mix_color(MUTED, tier_col, 0.18)
+        accent = self._mix_color(tier_col, (255, 255, 255), 0.12 + (0.16 * ht))
+        art_border = self._mix_color(BORDER, tier_col, 0.46 + (0.24 * ht))
+        stroke = self._mix_color((10, 12, 18), tier_col, 0.16)
+        return {
+            "fill": fill,
+            "border": border,
+            "title": title,
+            "desc": desc,
+            "accent": accent,
+            "art_border": art_border,
+            "stroke": stroke,
+            "tier": tier_col,
+        }
+
+    def _draw_enhancement_choice_panel(
+        self,
+        target: pygame.Surface,
+        plan: Dict[str, Any],
+        rect: pygame.Rect,
+        slot_no: int,
+        hover_t: float,
+    ) -> None:
+        tier_idx = int(plan.get("idx", 0))
+        style = self._enhance_choice_style(tier_idx, hover_t)
+        pygame.draw.rect(target, style["fill"], rect, border_radius=10)
+        if hover_t > 0.001:
+            hover_overlay = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+            hover_overlay.fill((*self._mix_color(style["fill"], style["tier"], 0.45), int(26 + (58 * hover_t))))
+            target.blit(hover_overlay, rect.topleft)
+        border_w = 2 + int(round(hover_t))
+        pygame.draw.rect(target, style["border"], rect, width=border_w, border_radius=10)
+
+        inner_x = rect.x + 12
+        inner_w = rect.w - 24
+        reserve_for_text = 172
+        art_h = max(180, min(int(rect.h * 0.68), rect.h - reserve_for_text))
+        art_rect = pygame.Rect(inner_x, rect.y + 12, inner_w, art_h)
+        self._draw_card_visual(plan["card"], art_rect, surface=target)
+        pygame.draw.rect(target, style["art_border"], art_rect, width=2, border_radius=8)
+
+        text_x = inner_x
+        text_w = inner_w
+        text_y = art_rect.bottom + 10
+        has_bonus = any(
+            bool(plan.get(k, False))
+            for k in ("efficiency_proc", "efficiency_double_proc", "same_tier_bonus_proc", "lower_bonus_proc")
+        )
+
+        title_text = f"{slot_no}) {plan['card'].name}"
+        self._blit_text_stroke(
+            target,
+            self.enh_choice_big,
+            title_text,
+            (text_x, text_y),
+            style["title"],
+            style["stroke"],
+            stroke_px=1,
+        )
+
+        tier_text = TIERS_NAME[Tier(tier_idx)]
+        self._blit_text_stroke(
+            target,
+            self.enh_choice_big,
+            f"티어: {tier_text}",
+            (text_x, text_y + 26),
+            style["tier"],
+            style["stroke"],
+            stroke_px=1,
+        )
+        tier_surf = self.enh_choice_big.render(f"티어: {tier_text}", True, style["tier"])
+        tier_icon = self._tier_icon_surface(tier_idx)
+        if tier_icon is not None:
+            icon_size = 24
+            icon_surf = pygame.transform.smoothscale(tier_icon, (icon_size, icon_size))
+            icon_x = text_x + tier_surf.get_width() + 4
+            icon_y = text_y + 26 + max(0, (tier_surf.get_height() - icon_size) // 2)
+            target.blit(icon_surf, (icon_x, icon_y))
+
+        current_desc = describe_card(plan["card"], self.player)
+        self._draw_wrapped(
+            f"현재: {current_desc}",
+            pygame.Rect(text_x, text_y + 56, text_w, 36),
+            self.small,
+            style["desc"],
+            max_lines=2,
+            surface=target,
+        )
+        self._draw_wrapped(
+            f"강화: {plan.get('display', '-')}",
+            pygame.Rect(text_x, text_y + 98, text_w, 56),
+            self.enh_choice_mid,
+            style["accent"],
+            max_lines=2,
+            surface=target,
+        )
+
+        if has_bonus:
+            items: List[Tuple[str, Any, int, int]] = []
+            if bool(plan.get("efficiency_proc", False)):
+                items.append(("eff", ("x1.5", (212, 205, 152)), 38, 38))
+            if bool(plan.get("efficiency_double_proc", False)):
+                items.append(("eff", ("x2", (150, 204, 166)), 38, 38))
+            if bool(plan.get("same_tier_bonus_proc", False)):
+                iw, ih = self._same_tier_bonus_dims(tier_idx)
+                items.append(("gem", tier_idx, iw, ih))
+            if bool(plan.get("lower_bonus_proc", False)):
+                iw, ih = self._lower_tier_bonus_dims(tier_idx)
+                items.append(("lower_gem", tier_idx, iw, ih))
+
+            if items:
+                pad_x = 8
+                pad_y = 8
+                gap = 6
+                content_w = sum(it[2] for it in items) + gap * (len(items) - 1)
+                content_h = max(it[3] for it in items)
+                box_w = content_w + pad_x * 2
+                box_h = content_h + pad_y * 2
+
+                bonus_box = pygame.Rect(
+                    rect.right - 12 - box_w,
+                    rect.bottom - 12 - box_h,
+                    box_w,
+                    box_h,
+                )
+                pygame.draw.rect(target, (24, 30, 44), bonus_box, border_radius=8)
+                pygame.draw.rect(target, style["border"], bonus_box, width=1, border_radius=8)
+
+                bx = bonus_box.x + pad_x
+                for idx, (kind, payload, iw, ih) in enumerate(items):
+                    iy = bonus_box.y + pad_y + (content_h - ih) // 2
+                    if kind == "eff":
+                        label, color = payload
+                        self._draw_efficiency_badge((bx + 19, iy + 19), label, color, surface=target)
+                    elif kind == "gem":
+                        self._draw_same_tier_bonus(bx, iy, int(payload), surface=target)
+                    elif kind == "lower_gem":
+                        self._draw_lower_tier_bonus(bx, iy, int(payload), surface=target)
+                    else:
+                        txt = payload
+                        target.blit(txt, (bx, iy))
+                    if idx < len(items) - 1:
+                        sep_x = bx + iw + (gap // 2)
+                        pygame.draw.line(
+                            target,
+                            style["border"],
+                            (sep_x, bonus_box.y + 6),
+                            (sep_x, bonus_box.bottom - 6),
+                            1,
+                        )
+                    bx += iw + gap
+
+    def _draw_wrapped(
+        self,
+        text: str,
+        rect: pygame.Rect,
+        font: pygame.font.Font,
+        color: Tuple[int, int, int],
+        max_lines: int,
+        surface: Optional[pygame.Surface] = None,
+    ) -> None:
+        dst = self.screen if surface is None else surface
         words = (text or "").split()
         if not words:
             return
@@ -1550,7 +1878,7 @@ class CombatUI:
         if len(lines) < max_lines:
             lines.append(current)
         for i, line in enumerate(lines[:max_lines]):
-            self.screen.blit(font.render(line, True, color), (rect.x, rect.y + i * (font.get_linesize() + 1)))
+            dst.blit(font.render(line, True, color), (rect.x, rect.y + i * (font.get_linesize() + 1)))
 
     def _draw_inline_segments(
         self,
@@ -1613,14 +1941,20 @@ class CombatUI:
                 pass
         self.screen.blit(self.tiny.render(line, True, color), (x, y))
 
-    def _draw_card_background(self, rect: pygame.Rect, card_type: str) -> None:
+    def _draw_card_background(
+        self,
+        rect: pygame.Rect,
+        card_type: str,
+        surface: Optional[pygame.Surface] = None,
+    ) -> None:
+        dst = self.screen if surface is None else surface
         img = self.attack_card_image if card_type == "attack" else self.defense_card_image
         if img is None:
             fill = CARD_ATTACK if card_type == "attack" else CARD_DEFENSE
-            pygame.draw.rect(self.screen, fill, rect, border_radius=8)
+            pygame.draw.rect(dst, fill, rect, border_radius=8)
             return
         scaled = pygame.transform.smoothscale(img, (rect.w, rect.h))
-        self.screen.blit(scaled, rect.topleft)
+        dst.blit(scaled, rect.topleft)
 
     def _tier_icon_surface(self, tier_idx: int) -> Optional[pygame.Surface]:
         ti = int(tier_idx)
@@ -1638,13 +1972,20 @@ class CombatUI:
         self.tier_icon_cache[ti] = surf
         return surf
 
-    def _draw_efficiency_badge(self, center: Tuple[int, int], text: str, border_color: Tuple[int, int, int]) -> None:
+    def _draw_efficiency_badge(
+        self,
+        center: Tuple[int, int],
+        text: str,
+        border_color: Tuple[int, int, int],
+        surface: Optional[pygame.Surface] = None,
+    ) -> None:
+        dst = self.screen if surface is None else surface
         radius = 19
-        pygame.draw.circle(self.screen, (24, 30, 44), center, radius)
-        pygame.draw.circle(self.screen, border_color, center, radius, width=3)
+        pygame.draw.circle(dst, (24, 30, 44), center, radius)
+        pygame.draw.circle(dst, border_color, center, radius, width=3)
         txt = self.tiny.render(text, True, (255, 255, 255))
         tr = txt.get_rect(center=(center[0] - 2, center[1]))
-        self.screen.blit(txt, tr.topleft)
+        dst.blit(txt, tr.topleft)
 
     def _same_tier_bonus_dims(self, tier_idx: int) -> Tuple[int, int]:
         icon = self._tier_icon_surface(tier_idx)
@@ -1659,25 +2000,39 @@ class CombatUI:
             return 38, 38
         return 20, 20
 
-    def _draw_same_tier_bonus(self, x: int, y: int, tier_idx: int) -> Tuple[int, int]:
+    def _draw_same_tier_bonus(
+        self,
+        x: int,
+        y: int,
+        tier_idx: int,
+        surface: Optional[pygame.Surface] = None,
+    ) -> Tuple[int, int]:
+        dst = self.screen if surface is None else surface
         icon = self._tier_icon_surface(tier_idx)
         if icon is not None:
             iw, ih = 38, 38
             icon_s = pygame.transform.smoothscale(icon, (iw, ih))
-            self.screen.blit(icon_s, (x, y))
+            dst.blit(icon_s, (x, y))
             return iw, ih
-        pygame.draw.circle(self.screen, _tier_color(tier_idx), (x + 10, y + 10), 10)
+        pygame.draw.circle(dst, _tier_color(tier_idx), (x + 10, y + 10), 10)
         return 20, 20
 
-    def _draw_lower_tier_bonus(self, x: int, y: int, tier_idx: int) -> Tuple[int, int]:
+    def _draw_lower_tier_bonus(
+        self,
+        x: int,
+        y: int,
+        tier_idx: int,
+        surface: Optional[pygame.Surface] = None,
+    ) -> Tuple[int, int]:
+        dst = self.screen if surface is None else surface
         lower_idx = max(0, int(tier_idx) - 1)
         icon = self._tier_icon_surface(lower_idx)
         if icon is not None:
             iw, ih = 38, 38
             icon_s = pygame.transform.smoothscale(icon, (iw, ih))
-            self.screen.blit(icon_s, (x, y))
+            dst.blit(icon_s, (x, y))
             return iw, ih
-        pygame.draw.circle(self.screen, _tier_color(lower_idx), (x + 10, y + 10), 10)
+        pygame.draw.circle(dst, _tier_color(lower_idx), (x + 10, y + 10), 10)
         return 20, 20
 
     def _card_cache_key(self, card: CardState) -> str:
@@ -1703,10 +2058,17 @@ class CombatUI:
         except Exception:
             return None
 
-    def _draw_card_visual(self, card: CardState, rect: pygame.Rect) -> None:
+    def _draw_card_visual(
+        self,
+        card: CardState,
+        rect: pygame.Rect,
+        draw_bg: bool = True,
+        surface: Optional[pygame.Surface] = None,
+    ) -> None:
+        dst = self.screen if surface is None else surface
         surf = self._card_surface(card)
         if surf is None:
-            self._draw_card_background(rect, card.type)
+            self._draw_card_background(rect, card.type, surface=dst)
             return
 
         key = self._card_cache_key(card)
@@ -1715,7 +2077,7 @@ class CombatUI:
         if scaled is None:
             sw, sh = surf.get_size()
             if sw <= 0 or sh <= 0:
-                self._draw_card_background(rect, card.type)
+                self._draw_card_background(rect, card.type, surface=dst)
                 return
             scale = min(rect.w / sw, rect.h / sh)
             tw = max(1, int(sw * scale))
@@ -1723,13 +2085,21 @@ class CombatUI:
             scaled = pygame.transform.smoothscale(surf, (tw, th))
             self.card_scaled_cache[skey] = scaled
 
-        bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
-        bg.fill((10, 12, 18, 140))
-        self.screen.blit(bg, rect.topleft)
-        dst = scaled.get_rect(center=rect.center)
-        self.screen.blit(scaled, dst.topleft)
+        if draw_bg:
+            bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+            bg.fill((10, 12, 18, 140))
+            dst.blit(bg, rect.topleft)
+        draw_rect = scaled.get_rect(center=rect.center)
+        dst.blit(scaled, draw_rect.topleft)
 
-    def _draw_card_visual_alpha(self, card: CardState, rect: pygame.Rect, alpha: int) -> None:
+    def _draw_card_visual_alpha(
+        self,
+        card: CardState,
+        rect: pygame.Rect,
+        alpha: int,
+        surface: Optional[pygame.Surface] = None,
+    ) -> None:
+        dst = self.screen if surface is None else surface
         a = max(0, min(255, int(alpha)))
         if a <= 0:
             return
@@ -1737,7 +2107,7 @@ class CombatUI:
         if surf is None:
             bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
             bg.fill((80, 90, 110, int(90 * (a / 255.0))))
-            self.screen.blit(bg, rect.topleft)
+            dst.blit(bg, rect.topleft)
             return
 
         key = self._card_cache_key(card)
@@ -1755,12 +2125,12 @@ class CombatUI:
 
         bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
         bg.fill((10, 12, 18, int(140 * (a / 255.0))))
-        self.screen.blit(bg, rect.topleft)
+        dst.blit(bg, rect.topleft)
 
         draw_surf = scaled.copy()
         draw_surf.set_alpha(a)
-        dst = draw_surf.get_rect(center=rect.center)
-        self.screen.blit(draw_surf, dst.topleft)
+        draw_rect = draw_surf.get_rect(center=rect.center)
+        dst.blit(draw_surf, draw_rect.topleft)
 
     def _spawn_card_use_animation(self, card: CardState, rect: pygame.Rect) -> None:
         self.card_use_anims.append(
@@ -2121,13 +2491,13 @@ class CombatUI:
     def _finish_card_action(self, card: CardState) -> None:
         self.rt.discard.append(card)
         self.actions_left -= 1
-        if self.actions_left <= 0 and self.phase == "player":
+        if self.actions_left <= 0 and self.phase == "Player":
             self._end_player_turn()
 
     def _end_player_turn(self) -> None:
         if self.game_over:
             return
-        if self.phase != "player":
+        if self.phase != "Player":
             return
         if self.pending_attack is not None:
             return
@@ -2150,7 +2520,7 @@ class CombatUI:
         self.turn += 1
         self.actions_left = self.cfg.cards_per_turn
         drew = _draw_n(self.rt, self.cfg, self.rng, self.cfg.draw_per_turn)
-        self.phase = "player"
+        self.phase = "Player"
         self.log(f"턴 {self.turn} 시작 (드로우 {drew}장)")
 
     def _expire_turn_shields(self) -> None:
@@ -2189,10 +2559,36 @@ class CombatUI:
                 elif e.state.stunned:
                     self.log(f"{e.name}: 기절로 행동 불가")
                 else:
-                    dealt = e.basic_attack(self.player)
-                    self.log(f"{e.name} 공격 -> 플레이어 {dealt:.1f}")
-                    if self.player.is_alive:
-                        self._trigger_on_hit_reactions(e)
+                    current_dist = int(self._enemy_distance_map().get(e.unit_id, 999))
+                    attack_range = self._enemy_attack_range(e)
+                    can_hit_player = current_dist <= attack_range
+                    frenzy_attacks_left = int(max(0.0, float(e.state.tags.get("frenzy_ally_attacks", 0.0))))
+                    if frenzy_attacks_left > 0:
+                        e.state.tags["frenzy_ally_attacks"] = float(max(0, frenzy_attacks_left - 1))
+                        allies = [other for other in alive if other is not e and other.is_alive]
+                        if allies:
+                            target = self.rng.choice(allies)
+                            dealt = e.basic_attack(target)
+                            self.log(f"{e.name} 광란 오인공격 -> {target.name} {dealt:.1f}")
+                        elif can_hit_player:
+                            dealt = e.basic_attack(self.player)
+                            self.log(f"{e.name} 공격 -> 플레이어 {dealt:.1f}")
+                            if self.player.is_alive:
+                                self._trigger_on_hit_reactions(e)
+                        else:
+                            self.log(
+                                f"{e.name}: 사거리 부족 (거리 {current_dist}, 사거리 {attack_range})"
+                            )
+                    else:
+                        if can_hit_player:
+                            dealt = e.basic_attack(self.player)
+                            self.log(f"{e.name} 공격 -> 플레이어 {dealt:.1f}")
+                            if self.player.is_alive:
+                                self._trigger_on_hit_reactions(e)
+                        else:
+                            self.log(
+                                f"{e.name}: 사거리 부족 (거리 {current_dist}, 사거리 {attack_range})"
+                            )
 
                 bleed = _tick_bleed(e)
                 if bleed > 0:
@@ -2223,6 +2619,12 @@ class CombatUI:
         if self.rt.on_hit_frenzy_ratio > 0:
             self.rt.frenzy_ratio += self.rt.on_hit_frenzy_ratio
             self.log(f"광란 +{self.rt.on_hit_frenzy_ratio*100:.1f}% (총 {self.rt.frenzy_ratio*100:.1f}%)")
+            if _chance_count(self.rt.on_hit_frenzy_ratio, self.rng) > 0:
+                attacker.state.tags["frenzy_ally_attacks"] = max(
+                    1.0,
+                    float(attacker.state.tags.get("frenzy_ally_attacks", 0.0)),
+                )
+                self.log(f"{attacker.name} 광란 부여: 아군 오인공격 준비")
 
     def _check_end(self) -> bool:
         if not self.player.is_alive:
@@ -2242,8 +2644,10 @@ class CombatUI:
     def _render(self) -> None:
         self.screen.fill(BG)
         if self.mode == "enhance":
-            self._draw_enhancement_screen()
-            return
+            self._update_enhance_choice_animation()
+            if self.mode == "enhance":
+                self._draw_enhancement_screen()
+                return
         self._draw_top_panel()
         self._draw_units()
         self._draw_cards()
@@ -2269,112 +2673,53 @@ class CombatUI:
             (18, 52),
         )
 
-        for i, (plan, rect) in enumerate(zip(self.enh_choices, self._enhance_choice_rects()), start=1):
-            pygame.draw.rect(self.screen, PANEL, rect, border_radius=10)
-            pygame.draw.rect(self.screen, BORDER, rect, width=2, border_radius=10)
+        choice_rects = self._enhance_choice_rects()
+        if len(self.enh_choice_hover_anim) != len(choice_rects):
+            old = self.enh_choice_hover_anim[:]
+            self.enh_choice_hover_anim = [old[i] if i < len(old) else 0.0 for i in range(len(choice_rects))]
+        hovered_idx = self._enhance_hovered_choice_index(choice_rects)
+        for i in range(len(choice_rects)):
+            target = 1.0 if hovered_idx == i else 0.0
+            self.enh_choice_hover_anim[i] += (target - self.enh_choice_hover_anim[i]) * 0.24
+            if abs(target - self.enh_choice_hover_anim[i]) < 0.002:
+                self.enh_choice_hover_anim[i] = target
 
-            inner_x = rect.x + 12
-            inner_w = rect.w - 24
-            reserve_for_text = 172
-            art_h = max(180, min(int(rect.h * 0.68), rect.h - reserve_for_text))
-            art_rect = pygame.Rect(inner_x, rect.y + 12, inner_w, art_h)
-            self._draw_card_visual(plan["card"], art_rect)
-            pygame.draw.rect(self.screen, BORDER, art_rect, width=2, border_radius=8)
+        now_ms = float(pygame.time.get_ticks())
+        intro_elapsed = max(0.0, now_ms - float(self.enh_choice_intro_start_ms))
+        intro_t = max(0.0, min(1.0, intro_elapsed / ENH_CHOICE_INTRO_MS))
+        intro_ease = 1.0 - ((1.0 - intro_t) ** 3)
 
-            text_x = inner_x
-            text_w = inner_w
-            text_y = art_rect.bottom + 10
-            has_bonus = any(
-                bool(plan.get(k, False))
-                for k in ("efficiency_proc", "efficiency_double_proc", "same_tier_bonus_proc", "lower_bonus_proc")
-            )
-            main_text_w = text_w
-            title_text = f"{i}) {plan['card'].name}"
-            self.screen.blit(self.enh_choice_big.render(title_text, True, TEXT), (text_x, text_y))
+        selected_idx: Optional[int] = None
+        select_ease = 0.0
+        if self.enh_choice_select_anim is not None:
+            selected_idx = int(self.enh_choice_select_anim.get("selected_index", -1))
+            sel_start = float(self.enh_choice_select_anim.get("start_ms", now_ms))
+            sel_dur = max(1.0, float(self.enh_choice_select_anim.get("duration_ms", ENH_CHOICE_SELECT_MS)))
+            sel_t = max(0.0, min(1.0, (now_ms - sel_start) / sel_dur))
+            select_ease = 1.0 - ((1.0 - sel_t) ** 3)
 
-            tier_idx = int(plan["idx"])
-            tier_text = TIERS_NAME[Tier(tier_idx)]
-            tier_surf = self.enh_choice_big.render(f"티어: {tier_text}", True, _tier_color(tier_idx))
-            tier_pos = (text_x, text_y + 26)
-            self.screen.blit(tier_surf, tier_pos)
-            tier_icon = self._tier_icon_surface(tier_idx)
-            if tier_icon is not None:
-                icon_size = 24
-                icon_surf = pygame.transform.smoothscale(tier_icon, (icon_size, icon_size))
-                icon_x = tier_pos[0] + tier_surf.get_width() + 4
-                icon_y = tier_pos[1] + max(0, (tier_surf.get_height() - icon_size) // 2)
-                self.screen.blit(icon_surf, (icon_x, icon_y))
+        for i, (plan, rect) in enumerate(zip(self.enh_choices, choice_rects), start=1):
+            hover_t = max(0.0, min(1.0, self.enh_choice_hover_anim[i - 1] if i - 1 < len(self.enh_choice_hover_anim) else 0.0))
+            panel_alpha = int(255 * intro_ease)
+            y_offset = int((1.0 - intro_ease) * 58)
+            if selected_idx is not None:
+                if (i - 1) == selected_idx:
+                    y_offset -= int(86 * select_ease)
+                    panel_alpha = 255
+                    hover_t = max(hover_t, 0.55)
+                else:
+                    panel_alpha = int(panel_alpha * (1.0 - select_ease))
 
-            current_desc = describe_card(plan["card"], self.player)
-            self._draw_wrapped(
-                f"현재: {current_desc}",
-                pygame.Rect(text_x, text_y + 56, main_text_w, 36),
-                self.small,
-                MUTED,
-                max_lines=2,
-            )
-            self._draw_wrapped(
-                f"강화: {plan.get('display', '-')}",
-                pygame.Rect(text_x, text_y + 98, main_text_w, 56),
-                self.enh_choice_mid,
-                _tier_color(tier_idx),
-                max_lines=2,
-            )
+            if panel_alpha <= 0:
+                continue
 
-            if has_bonus:
-                items: List[Tuple[str, Any, int, int]] = []
-                if bool(plan.get("efficiency_proc", False)):
-                    items.append(("eff", ("×1.5", (212, 205, 152)), 38, 38))
-                if bool(plan.get("efficiency_double_proc", False)):
-                    items.append(("eff", ("×2", (150, 204, 166)), 38, 38))
-                if bool(plan.get("same_tier_bonus_proc", False)):
-                    iw, ih = self._same_tier_bonus_dims(tier_idx)
-                    items.append(("gem", tier_idx, iw, ih))
-                if bool(plan.get("lower_bonus_proc", False)):
-                    iw, ih = self._lower_tier_bonus_dims(tier_idx)
-                    items.append(("lower_gem", tier_idx, iw, ih))
-
-                if items:
-                    pad_x = 8
-                    pad_y = 8
-                    gap = 6
-                    content_w = sum(it[2] for it in items) + gap * (len(items) - 1)
-                    content_h = max(it[3] for it in items)
-                    box_w = content_w + pad_x * 2
-                    box_h = content_h + pad_y * 2
-
-                    bonus_box = pygame.Rect(
-                        rect.right - 12 - box_w,
-                        rect.bottom - 12 - box_h,
-                        box_w,
-                        box_h,
-                    )
-                    pygame.draw.rect(self.screen, (24, 30, 44), bonus_box, border_radius=8)
-                    pygame.draw.rect(self.screen, BORDER, bonus_box, width=1, border_radius=8)
-
-                    bx = bonus_box.x + pad_x
-                    for idx, (kind, payload, iw, ih) in enumerate(items):
-                        iy = bonus_box.y + pad_y + (content_h - ih) // 2
-                        if kind == "eff":
-                            label, color = payload
-                            self._draw_efficiency_badge((bx + 19, iy + 19), label, color)
-                        elif kind == "gem":
-                            self._draw_same_tier_bonus(bx, iy, int(payload))
-                        elif kind == "lower_gem":
-                            self._draw_lower_tier_bonus(bx, iy, int(payload))
-                        else:
-                            txt = payload
-                            self.screen.blit(txt, (bx, iy))
-                        if idx < len(items) - 1:
-                            sep_x = bx + iw + (gap // 2)
-                            pygame.draw.line(
-                                self.screen,
-                                BORDER,
-                                (sep_x, bonus_box.y + 6),
-                                (sep_x, bonus_box.bottom - 6),
-                                1,
-                            )
-                        bx += iw + gap
+            tile = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+            local_rect = tile.get_rect()
+            self._draw_enhancement_choice_panel(tile, plan, local_rect, i, hover_t)
+            if panel_alpha < 255:
+                tile.set_alpha(panel_alpha)
+            draw_rect = rect.move(0, y_offset)
+            self.screen.blit(tile, draw_rect.topleft)
 
         log_panel = self._enh_log_collapsed_rect()
         pygame.draw.rect(self.screen, PANEL, log_panel, border_radius=10)
@@ -2464,7 +2809,7 @@ class CombatUI:
         )
         self._draw_inline_segments(18, 46, status_segments, self.small)
 
-        btn_color = (56, 86, 126) if self.phase == "player" and not self.game_over else (76, 76, 86)
+        btn_color = (56, 86, 126) if self.phase == "Player" and not self.game_over else (76, 76, 86)
         pygame.draw.rect(self.screen, btn_color, self.end_button_rect, border_radius=8)
         pygame.draw.rect(self.screen, BORDER, self.end_button_rect, width=2, border_radius=8)
         self.screen.blit(self.small.render("턴 종료 (Space)", True, TEXT), (self.end_button_rect.x + 15, self.end_button_rect.y + 14))
@@ -2475,7 +2820,7 @@ class CombatUI:
         selected = self._get_selected_unit()
         selected_kind = selected[0] if selected is not None else None
         selected_unit = selected[1] if selected is not None else None
-        if selected_kind == "player" and selected_unit is self.player and self.player.is_alive:
+        if selected_kind == "Player" and selected_unit is self.player and self.player.is_alive:
             pygame.draw.circle(self.screen, (255, 224, 120), player_center, 68, width=5)
         player_rect = pygame.Rect(0, 0, 108, 108)
         player_rect.center = player_center
@@ -2643,7 +2988,7 @@ class CombatUI:
             draw_rect = pygame.Rect(0, 0, size, size)
             draw_rect.center = (int(round(cx + shake_x)), int(round(cy)))
 
-            enemy_kind = str(fx.get("kind", "wolf"))
+            enemy_kind = str(fx.get("kind", "Wolf"))
             enemy_img = self._scaled_unit_image(enemy_kind, (draw_rect.w, draw_rect.h))
             if enemy_img is not None:
                 tmp = enemy_img.copy()
@@ -2711,21 +3056,51 @@ class CombatUI:
             pygame.draw.rect(self.screen, BORDER, badge, width=1, border_radius=6)
             self.screen.blit(self.tiny.render(str(i + 1), True, TEXT), (badge.x + 10, badge.y + 4))
 
+        drag_rect: Optional[pygame.Rect] = None
         if drag_idx is not None and 0 <= drag_idx < len(self.rt.hand):
             base_drag_rect = rects[drag_idx]
             card = self.rt.hand[drag_idx]
-            drag_rect = pygame.Rect(0, 0, base_drag_rect.w, base_drag_rect.h)
-            drag_rect.x = self.drag_card_mouse_pos[0] - self.drag_card_anchor[0]
-            drag_rect.y = self.drag_card_mouse_pos[1] - self.drag_card_anchor[1]
-            glow = drag_rect.inflate(16, 16)
-            pygame.draw.rect(self.screen, (255, 225, 120), glow, width=3, border_radius=14)
-            self._draw_card_visual(card, drag_rect)
-            pygame.draw.rect(self.screen, BORDER, drag_rect, width=2, border_radius=10)
+            base_w = max(1, base_drag_rect.w)
+            base_h = max(1, base_drag_rect.h)
+            target_h = max(base_h, int(self.height * 0.5))
+            aspect = base_w / float(base_h)
+            target_w = int(round(target_h * aspect))
+            max_w = max(120, self.width - 40)
+            if target_w > max_w:
+                target_w = max_w
+                target_h = int(round(target_w / max(1e-6, aspect)))
+            target_h = max(80, min(target_h, self.height - 80))
+            target_w = max(60, target_w)
 
-        if cancel_rect is not None:
+            anchor_rx = self.drag_card_anchor[0] / float(base_w)
+            anchor_ry = self.drag_card_anchor[1] / float(base_h)
+            anchor_x = int(round(target_w * anchor_rx))
+            anchor_y = int(round(target_h * anchor_ry))
+
+            drag_rect = pygame.Rect(0, 0, target_w, target_h)
+            drag_rect.x = self.drag_card_mouse_pos[0] - anchor_x
+            drag_rect.y = self.drag_card_mouse_pos[1] - anchor_y
+            # 드래그 중에는 카드 컨테이너(glow/border/어두운 배경) 없이 카드만 표시한다.
+            self._draw_card_visual(card, drag_rect, draw_bg=False)
+        info_idx: Optional[int] = None
+        info_rect: Optional[pygame.Rect] = None
+        if drag_idx is not None and drag_rect is not None and 0 <= drag_idx < len(self.rt.hand):
+            info_idx = drag_idx
+            info_rect = drag_rect
+        elif hovered_idx is not None and 0 <= hovered_idx < len(self.rt.hand):
+            info_idx = hovered_idx
+            info_rect = rects[hovered_idx]
+        elif selected_idx is not None and 0 <= selected_idx < len(self.rt.hand):
+            info_idx = selected_idx
+            info_rect = rects[selected_idx]
+
+        if cancel_rect is not None and drag_idx is None:
             pygame.draw.rect(self.screen, (70, 32, 32), cancel_rect, border_radius=6)
             pygame.draw.rect(self.screen, (230, 130, 130), cancel_rect, width=1, border_radius=6)
             self._draw_rect_x(cancel_rect, (255, 255, 255))
+
+        if info_idx is not None and info_rect is not None:
+            self._draw_card_tooltip_above(self.rt.hand[info_idx], info_rect)
 
         # 카드 사용 시: 위로 올라가며 사라지는 애니메이션
         next_anims: List[Dict[str, Any]] = []
@@ -2749,58 +3124,55 @@ class CombatUI:
             next_anims.append(anim)
         self.card_use_anims = next_anims
 
+    def _draw_card_tooltip_above(self, card: CardState, anchor_rect: pygame.Rect) -> None:
+        detail_parts = [p.strip() for p in describe_card(card, self.player).split(" / ") if p.strip()]
+        if not detail_parts:
+            detail_parts = [describe_card(card, self.player)]
+
+        lines = detail_parts[:4]
+        line_h = 18
+        title_h = 18
+        content_h = max(1, len(lines)) * line_h
+        panel_h = 8 + title_h + 6 + content_h + 8
+
+        max_panel_w = min(620, self.width - 16)
+        min_panel_w = 240
+        text_w = self.tiny.size(card.name)[0]
+        for part in lines:
+            text_w = max(text_w, self.tiny.size(part)[0])
+        panel_w = max(min_panel_w, min(max_panel_w, text_w + 24))
+
+        panel_x = int(anchor_rect.centerx - (panel_w // 2))
+        panel_x = max(8, min(self.width - panel_w - 8, panel_x))
+        panel_y = int(anchor_rect.y - panel_h - 10)
+        top_limit = 84
+        if panel_y < top_limit:
+            panel_y = min(self.height - panel_h - 8, anchor_rect.bottom + 10)
+        panel = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
+
+        pygame.draw.rect(self.screen, PANEL, panel, border_radius=8)
+        pygame.draw.rect(self.screen, BORDER, panel, width=2, border_radius=8)
+        self.screen.blit(
+            self.tiny.render(card.name, True, _tier_color(_card_tier_index(card))),
+            (panel.x + 10, panel.y + 8),
+        )
+
+        yy = panel.y + 8 + title_h + 6
+        for part in lines:
+            self._draw_wrapped(
+                part,
+                pygame.Rect(panel.x + 10, yy, panel.w - 18, 18),
+                self.tiny,
+                MUTED,
+                max_lines=1,
+            )
+            yy += 18
+
     def _draw_logs(self) -> None:
         button = self._battle_log_button_rect()
         pygame.draw.rect(self.screen, PANEL, button, border_radius=8)
         pygame.draw.rect(self.screen, BORDER, button, width=2, border_radius=8)
         self.screen.blit(self.tiny.render("전투 로그", True, TEXT), (button.x + 18, button.y + 9))
-
-        sel_idx = self.selected_card_index
-        hovered_idx = self._hovered_card_index()
-        info_idx: Optional[int] = None
-        if sel_idx is not None and 0 <= sel_idx < len(self.rt.hand):
-            info_idx = sel_idx
-        elif hovered_idx is not None and 0 <= hovered_idx < len(self.rt.hand):
-            info_idx = hovered_idx
-
-        if info_idx is not None and not self.battle_log_expanded:
-            card = self.rt.hand[info_idx]
-            panel_x = button.right + 10
-            detail_parts = [p.strip() for p in describe_card(card, self.player).split(" / ") if p.strip()]
-            if not detail_parts:
-                detail_parts = [describe_card(card, self.player)]
-
-            max_lines = 4
-            lines = detail_parts[:max_lines]
-            line_h = 18
-            title_h = 18
-            content_h = max(1, len(lines)) * line_h
-            panel_h = 8 + title_h + 6 + content_h + 8
-
-            max_panel_w = min(620, self.width - panel_x - 18)
-            min_panel_w = 240
-            text_w = self.tiny.size(card.name)[0]
-            for part in lines:
-                text_w = max(text_w, self.tiny.size(part)[0])
-            panel_w = max(min_panel_w, min(max_panel_w, text_w + 24))
-            panel = pygame.Rect(panel_x, button.y - 4, panel_w, panel_h)
-            pygame.draw.rect(self.screen, PANEL, panel, border_radius=8)
-            pygame.draw.rect(self.screen, BORDER, panel, width=2, border_radius=8)
-            self.screen.blit(
-                self.tiny.render(card.name, True, _tier_color(_card_tier_index(card))),
-                (panel.x + 10, panel.y + 8),
-            )
-
-            yy = panel.y + 8 + title_h + 6
-            for part in lines:
-                self._draw_wrapped(
-                    part,
-                    pygame.Rect(panel.x + 10, yy, panel.w - 18, 18),
-                    self.tiny,
-                    MUTED,
-                    max_lines=1,
-                )
-                yy += 18
 
         if not self.battle_log_expanded:
             return
@@ -2852,14 +3224,15 @@ class CombatUI:
         self._draw_unit_tooltip()
 
         if self.game_over:
-            overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-            overlay.fill((10, 12, 16, 165))
-            self.screen.blit(overlay, (0, 0))
-            title = "승리!" if self.win else "패배"
-            color = GREEN if self.win else RED
-            t = self.font.render(title, True, color)
-            self.screen.blit(t, (self.width // 2 - t.get_width() // 2, self.height // 2 - 40))
-            self.screen.blit(self.small.render("R 키로 재시작", True, TEXT), (self.width // 2 - 66, self.height // 2 + 4))
+            if self.win and self._has_active_enemy_remove_effects():
+                return
+            box_w, box_h = 188, 56
+            box = pygame.Rect(0, 0, box_w, box_h)
+            box.center = (self.width // 2, self.height // 2 - 8)
+            pygame.draw.rect(self.screen, (24, 30, 44), box, border_radius=10)
+            pygame.draw.rect(self.screen, BORDER, box, width=2, border_radius=10)
+            msg = self.small.render("전투 종료!", True, TEXT)
+            self.screen.blit(msg, msg.get_rect(center=box.center))
 
 
 def main() -> None:
@@ -2882,6 +3255,8 @@ def run_meet_combat(
     template_state: Optional[List[Dict[str, Any]]] = None,
     template_state_out: Optional[List[Dict[str, Any]]] = None,
     player_state_out: Optional[Dict[str, Any]] = None,
+    enhance_gacha_state: Optional[Dict[str, Any]] = None,
+    enhance_gacha_state_out: Optional[Dict[str, Any]] = None,
 ) -> Optional[bool]:
     """Meet 전투를 1회 실행하고 결과를 반환한다.
 
@@ -2903,6 +3278,7 @@ def run_meet_combat(
         player_profile=player_profile,
         unit_archetypes=unit_archetypes,
         initial_template_state=template_state,
+        initial_enhance_gacha_state=enhance_gacha_state,
     )
     result = ui.run(quit_on_exit=False, stop_on_game_over=True)
     if template_state_out is not None:
@@ -2911,6 +3287,9 @@ def run_meet_combat(
     if player_state_out is not None:
         player_state_out.clear()
         player_state_out.update(ui.export_player_state())
+    if enhance_gacha_state_out is not None:
+        enhance_gacha_state_out.clear()
+        enhance_gacha_state_out.update(ui.export_enhance_gacha_state())
     return result
 
 
@@ -2925,6 +3304,8 @@ def run_enhancement_choices(
     unit_archetypes: Optional[Dict[str, Dict[str, Any]]] = None,
     template_state: Optional[List[Dict[str, Any]]] = None,
     template_state_out: Optional[List[Dict[str, Any]]] = None,
+    enhance_gacha_state: Optional[Dict[str, Any]] = None,
+    enhance_gacha_state_out: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """강화 선택 페이즈만 실행하고, 덱 요약 라인을 반환한다."""
     ui = CombatUI(
@@ -2938,11 +3319,15 @@ def run_enhancement_choices(
         player_profile=player_profile,
         unit_archetypes=unit_archetypes,
         initial_template_state=template_state,
+        initial_enhance_gacha_state=enhance_gacha_state,
     )
     ui.run(quit_on_exit=False, stop_on_enhance_complete=True)
     if template_state_out is not None:
         template_state_out.clear()
         template_state_out.extend(ui.export_template_state())
+    if enhance_gacha_state_out is not None:
+        enhance_gacha_state_out.clear()
+        enhance_gacha_state_out.update(ui.export_enhance_gacha_state())
     lines: List[str] = []
     if ui.enh_templates:
         lines.append(f"총 {len(ui.enh_templates) * 5}장")

@@ -412,20 +412,43 @@ class EnhanceGacha:
             return q
         return [x / total for x in q]
 
-    def preview_choice_tiers(self, n_choices: int = 3) -> List[int]:
+    @staticmethod
+    def _apply_min_floor_to_probs(probs: List[float], min_tier: int) -> List[float]:
+        n = len(probs)
+        floor = max(-1, min(int(min_tier), n - 1))
+        if floor < 0:
+            return list(probs)
+        floored = [0.0 if i < floor else float(p) for i, p in enumerate(probs)]
+        total = sum(floored)
+        if total <= 0.0:
+            out = [0.0] * n
+            out[floor] = 1.0
+            return out
+        return [x / total for x in floored]
+
+    def preview_choice_tiers(self, n_choices: int = 3, extra_min_tier: int = -1) -> List[int]:
         """현재 피티/천장 상태에서 선택지용 티어 인덱스 n개를 샘플링(상태 변화 없음)."""
-        forced = self._forced_min_tier()
+        extra_floor = max(-1, int(extra_min_tier))
+        forced = max(self._forced_min_tier(), extra_floor)
         base_normal = self._adjusted_probs(apply_forced_floor=False)
+        base_normal = self._apply_min_floor_to_probs(base_normal, extra_floor)
         offer_probs_normal = self.transform_probs_for_choice(base_normal, n_choices=n_choices)
         picks = [self._sample_index(offer_probs_normal) for _ in range(n_choices)]
         if forced >= 0 and n_choices > 0:
             base_forced = self._adjusted_probs(apply_forced_floor=True)
+            base_forced = self._apply_min_floor_to_probs(base_forced, extra_floor)
             offer_probs_forced = self.transform_probs_for_choice(base_forced, n_choices=n_choices)
             forced_slot = random.randrange(n_choices)
             picks[forced_slot] = self._sample_index(offer_probs_forced)
         return picks
 
-    def preview_choices(self, engine: "EnhancementEngine", card: "CardState", n_choices: int = 3) -> Tuple[List[int], List[Dict[str, Any]]]:
+    def preview_choices(
+        self,
+        engine: "EnhancementEngine",
+        card: "CardState",
+        n_choices: int = 3,
+        extra_min_tier: int = -1,
+    ) -> Tuple[List[int], List[Dict[str, Any]]]:
         """
         현재 상태에서 (천장/피티 반영된) 확률을 기반으로
         '보기용' 강화 티어 n개를 뽑아주고, 각 후보에 대해
@@ -436,7 +459,7 @@ class EnhanceGacha:
           - picks: 티어 인덱스 리스트
           - option_infos: 각 후보에 대응하는 옵션 요약(dict)
         """
-        picks = self.preview_choice_tiers(n_choices=n_choices)
+        picks = self.preview_choice_tiers(n_choices=n_choices, extra_min_tier=extra_min_tier)
 
         option_infos: List[Dict[str, Any]] = []
         for idx in picks:
