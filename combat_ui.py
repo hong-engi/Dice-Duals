@@ -51,12 +51,20 @@ TIER_COLOR_BY_INDEX: Dict[int, Tuple[int, int, int]] = {
     5: (255, 104, 104),   # t5: red
     6: (255, 104, 104),   # t6: red
 }
-UNIT_ARCHETYPES: Dict[str, Dict[str, Any]] = {
+DEFAULT_UNIT_ARCHETYPES: Dict[str, Dict[str, Any]] = {
     "wolf": {"name": "늑대", "max_hp": 300.0, "attack": 30.0, "armor": 20.0},
     "archer": {"name": "궁수", "max_hp": 200.0, "attack": 60.0, "armor": 0.0},
     "mage": {"name": "마법사", "max_hp": 50.0, "attack": 150.0, "armor": 0.0},
 }
-ENEMY_UNIT_KEYS: Tuple[str, ...] = tuple(UNIT_ARCHETYPES.keys())
+DEFAULT_PLAYER_PROFILE: Dict[str, Any] = {
+    "unit_id": "player",
+    "unit_key": "player",
+    "name": "플레이어",
+    "max_hp": 500.0,
+    "attack": 50.0,
+    "armor": 20.0,
+    "shield_power": 50.0,
+}
 ENEMY_REMOVE_EFFECT_MS = 650.0
 
 
@@ -137,6 +145,9 @@ class CombatUI:
         forced_initial_draw: Optional[float] = None,
         forced_min_enhance_tier: Optional[int] = None,
         forced_min_enhance_tier_rolls: Optional[int] = None,
+        player_profile: Optional[Dict[str, Any]] = None,
+        unit_archetypes: Optional[Dict[str, Dict[str, Any]]] = None,
+        initial_template_state: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         pygame.init()
         pygame.display.set_caption("Dice Duals - Combat UI")
@@ -154,11 +165,40 @@ class CombatUI:
         self.enh_heading_small = self._load_font(16, preferred="keriskedu_bold")
         self.attack_card_image = self._load_image(os.path.join("images", "card_images", "card_attack.png"))
         self.defense_card_image = self._load_image(os.path.join("images", "card_images", "card_defense.png"))
+        raw_archetypes = unit_archetypes or DEFAULT_UNIT_ARCHETYPES
+        self.unit_archetypes: Dict[str, Dict[str, Any]] = {}
+        for k, spec in raw_archetypes.items():
+            key = str(k).strip().lower()
+            if not key:
+                continue
+            self.unit_archetypes[key] = {
+                "name": str(spec.get("name", key)),
+                "max_hp": float(spec.get("max_hp", 100.0)),
+                "attack": float(spec.get("attack", 10.0)),
+                "armor": float(spec.get("armor", 0.0)),
+            }
+        if not self.unit_archetypes:
+            self.unit_archetypes = {k: dict(v) for k, v in DEFAULT_UNIT_ARCHETYPES.items()}
+        self.enemy_unit_keys: Tuple[str, ...] = tuple(self.unit_archetypes.keys())
+
+        raw_player_profile: Dict[str, Any] = dict(DEFAULT_PLAYER_PROFILE)
+        if player_profile:
+            raw_player_profile.update(player_profile)
+        self.player_profile: Dict[str, Any] = {
+            "unit_id": str(raw_player_profile.get("unit_id", "player")),
+            "unit_key": str(raw_player_profile.get("unit_key", "player") or "player"),
+            "name": str(raw_player_profile.get("name", "플레이어")),
+            "max_hp": float(raw_player_profile.get("max_hp", 500.0)),
+            "current_hp": float(raw_player_profile.get("current_hp", raw_player_profile.get("max_hp", 500.0))),
+            "attack": float(raw_player_profile.get("attack", 50.0)),
+            "armor": float(raw_player_profile.get("armor", 20.0)),
+            "shield_power": float(raw_player_profile.get("shield_power", 50.0)),
+        }
+        self.player_unit_key = str(self.player_profile.get("unit_key", "player") or "player")
+        unit_image_keys = sorted({self.player_unit_key, *self.enemy_unit_keys})
         self.unit_image_raw: Dict[str, Optional[pygame.Surface]] = {
-            "player": self._load_image(os.path.join("images", "units", "player.png")),
-            "wolf": self._load_image(os.path.join("images", "units", "wolf.png")),
-            "archer": self._load_image(os.path.join("images", "units", "archer.png")),
-            "mage": self._load_image(os.path.join("images", "units", "mage.png")),
+            key: self._load_image(os.path.join("images", "units", f"{key}.png"))
+            for key in unit_image_keys
         }
         self.effect_image_raw: Dict[str, Optional[pygame.Surface]] = {
             "freeze_back": self._load_image(os.path.join("images", "effects", "freeze_back.png")),
@@ -177,7 +217,9 @@ class CombatUI:
             else None
         )
         self.encounter_enemy_types = [
-            k for k in (encounter_enemy_types or []) if k in UNIT_ARCHETYPES
+            ek
+            for ek in (str(k).strip().lower() for k in (encounter_enemy_types or []))
+            if ek in self.unit_archetypes
         ] or None
         self.forced_start_enhance_rolls = (
             max(0, int(forced_start_enhance_rolls))
@@ -202,6 +244,7 @@ class CombatUI:
             else 0
         )
         self.rng = random.Random(seed)
+        self.initial_template_state = list(initial_template_state or [])
 
         self.running = True
         self.logs: List[str] = []
@@ -219,6 +262,11 @@ class CombatUI:
         self.selected_card_index: Optional[int] = None
         self.selected_unit_key: Optional[Tuple[str, str]] = None
         self.pending_attack: Optional[PendingAttack] = None
+        self.drag_card_index: Optional[int] = None
+        self.drag_card_anchor: Tuple[int, int] = (0, 0)
+        self.drag_card_mouse_pos: Tuple[int, int] = (0, 0)
+        self.drag_card_start_pos: Tuple[int, int] = (0, 0)
+        self.drag_card_moved = False
         self.end_button_rect = pygame.Rect(self.width - 190, 18, 160, 48)
 
         self.enh_engine: Optional[EnhancementEngine] = None
@@ -334,10 +382,11 @@ class CombatUI:
         )
         self.screen.blit(front_draw, front_rect.topleft)
 
-    @staticmethod
-    def _enemy_kind(enemy: Enemy) -> str:
+    def _enemy_kind(self, enemy: Enemy) -> str:
         prefix = enemy.unit_id.split("_", 1)[0].lower()
-        return prefix if prefix in UNIT_ARCHETYPES else "wolf"
+        if prefix in self.unit_archetypes:
+            return prefix
+        return self.enemy_unit_keys[0] if self.enemy_unit_keys else "wolf"
 
     def new_game(self) -> None:
         if self._enh_rng_backup is not None:
@@ -350,14 +399,19 @@ class CombatUI:
         self.effect_scaled_cache.clear()
         self.rt = CombatRuntime(deck=[])
 
+        max_hp = max(1.0, float(self.player_profile["max_hp"]))
+        start_hp = max(0.0, min(max_hp, float(self.player_profile.get("current_hp", max_hp))))
         self.player = Player(
-            unit_id="player",
-            name="플레이어",
-            max_hp=500.0,
-            hp=500.0,
+            unit_id=str(self.player_profile["unit_id"]),
+            name=str(self.player_profile["name"]),
+            max_hp=max_hp,
+            hp=start_hp,
             cards=[],
-            attack=AttackProfile(power=50.0),
-            defense=DefenseProfile(armor=20.0, defense_power=50.0),
+            attack=AttackProfile(power=max(0.0, float(self.player_profile["attack"]))),
+            defense=DefenseProfile(
+                armor=max(0.0, float(self.player_profile["armor"])),
+                shield_power=max(0.0, float(self.player_profile["shield_power"])),
+            ),
         )
         self.enemy_rows = self._build_enemy_rows_unique(
             enemy_count=self.encounter_enemy_count,
@@ -374,6 +428,11 @@ class CombatUI:
         self.selected_card_index = None
         self.selected_unit_key = None
         self.pending_attack = None
+        self.drag_card_index = None
+        self.drag_card_anchor = (0, 0)
+        self.drag_card_mouse_pos = (0, 0)
+        self.drag_card_start_pos = (0, 0)
+        self.drag_card_moved = False
         self.phase = "player"
         self.game_over = False
         self.win = False
@@ -381,8 +440,21 @@ class CombatUI:
         self.actions_left = self.cfg.cards_per_turn
 
         self.enh_engine = EnhancementEngine.load("card_definitions.json")
-        self.enh_templates = _build_starting_card_templates(self.enh_engine)
+        if self.initial_template_state:
+            self.enh_templates = [CardState.from_dict(d) for d in self.initial_template_state]
+        else:
+            self.enh_templates = _build_starting_card_templates(self.enh_engine)
         self._begin_enhancement_phase()
+
+    def export_template_state(self) -> List[Dict[str, Any]]:
+        return [c.to_dict() for c in self.enh_templates]
+
+    def export_player_state(self) -> Dict[str, float]:
+        return {
+            "hp": float(max(0.0, self.player.hp)),
+            "max_hp": float(max(1.0, self.player.max_hp)),
+            "shield": float(max(0.0, self.player.state.shield)),
+        }
 
     def _build_enemy_rows_unique(
         self,
@@ -390,7 +462,7 @@ class CombatUI:
         enemy_types: Optional[List[str]] = None,
     ) -> List[List[Enemy]]:
         # 지정 타입이 없으면 wolf/archer/mage를 랜덤 소환한다.
-        planned_types = [k for k in (enemy_types or []) if k in UNIT_ARCHETYPES]
+        planned_types = [k for k in (enemy_types or []) if k in self.unit_archetypes]
         default_count = 5
         target_count = (
             max(1, int(enemy_count))
@@ -399,13 +471,16 @@ class CombatUI:
         )
         if len(planned_types) < target_count:
             while len(planned_types) < target_count:
-                planned_types.append(self.rng.choice(ENEMY_UNIT_KEYS))
+                if self.enemy_unit_keys:
+                    planned_types.append(self.rng.choice(self.enemy_unit_keys))
+                else:
+                    break
         else:
             planned_types = planned_types[:target_count]
 
         all_enemies: List[Enemy] = []
         for idx, unit_key in enumerate(planned_types, start=1):
-            bp = UNIT_ARCHETYPES[unit_key]
+            bp = self.unit_archetypes[unit_key]
             all_enemies.append(
                 Enemy(
                     unit_id=f"{unit_key}_{idx}",
@@ -413,7 +488,7 @@ class CombatUI:
                     max_hp=float(bp["max_hp"]),
                     hp=float(bp["max_hp"]),
                     attack=AttackProfile(power=float(bp["attack"])),
-                    defense=DefenseProfile(armor=float(bp["armor"]), defense_power=0.0),
+                    defense=DefenseProfile(armor=float(bp["armor"]), shield_power=0.0),
                 )
             )
 
@@ -774,6 +849,10 @@ class CombatUI:
                         if self.battle_log_expanded:
                             self.battle_log_expanded = False
                             return
+                        if self.drag_card_index is not None:
+                            self._clear_card_drag(clear_selection=True)
+                            self.log("카드 드래그 취소")
+                            return
                         if self.selected_card_index is not None:
                             self.selected_card_index = None
                             self.log("카드 선택 취소")
@@ -857,9 +936,18 @@ class CombatUI:
                 if self.mode == "battle" and self.battle_log_expanded:
                     self._scroll_battle_log(event.y)
                 continue
+            if event.type == pygame.MOUSEMOTION:
+                self._update_card_drag(event.pos)
+                continue
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                if self.drag_card_index is not None:
+                    self._finish_card_drag(event.pos)
+                continue
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self.mode == "enhance":
                     self._handle_enhance_click(event.pos)
+                    continue
+                if self._try_begin_card_drag(event.pos):
                     continue
                 self._handle_left_click(event.pos)
 
@@ -910,6 +998,113 @@ class CombatUI:
         self.selected_card_index = hot_idx
         self.log(f"카드 선택: {self.rt.hand[hot_idx].name} (숫자키 재입력 사용 / ESC,X 취소)")
         return True
+
+    def _clear_card_drag(self, clear_selection: bool = False) -> None:
+        self.drag_card_index = None
+        self.drag_card_anchor = (0, 0)
+        self.drag_card_mouse_pos = (0, 0)
+        self.drag_card_start_pos = (0, 0)
+        self.drag_card_moved = False
+        if clear_selection:
+            self.selected_card_index = None
+
+    def _try_begin_card_drag(self, pos: Tuple[int, int]) -> bool:
+        if self.mode != "battle" or self.game_over or self.phase != "player":
+            return False
+        if self.pending_attack is not None or self.battle_log_expanded:
+            return False
+        if self.actions_left <= 0:
+            return False
+
+        card_rects = self._display_card_rects()
+        for i, rect in enumerate(card_rects):
+            if rect.collidepoint(pos):
+                self.drag_card_index = i
+                self.drag_card_anchor = (pos[0] - rect.x, pos[1] - rect.y)
+                self.drag_card_mouse_pos = pos
+                self.drag_card_start_pos = pos
+                self.drag_card_moved = False
+                self.selected_card_index = i
+                self.selected_unit_key = None
+                return True
+        return False
+
+    def _update_card_drag(self, pos: Tuple[int, int]) -> None:
+        if self.drag_card_index is None:
+            return
+        self.drag_card_mouse_pos = pos
+        if self.drag_card_moved:
+            return
+        dx = pos[0] - self.drag_card_start_pos[0]
+        dy = pos[1] - self.drag_card_start_pos[1]
+        if (dx * dx + dy * dy) >= 49:
+            self.drag_card_moved = True
+
+    def _enemy_hit_at_pos(self, pos: Tuple[int, int], valid: Optional[set[Enemy]] = None) -> Optional[Enemy]:
+        for enemy, rect, _ in self._enemy_slots():
+            if rect.collidepoint(pos) and enemy.is_alive:
+                if valid is None or enemy in valid:
+                    return enemy
+        return None
+
+    def _handle_card_click_index(self, card_index: int) -> None:
+        if not (0 <= card_index < len(self.rt.hand)):
+            return
+        card = self.rt.hand[card_index]
+        self.selected_unit_key = None
+        if self.selected_card_index == card_index:
+            if card.type == "attack":
+                self.selected_card_index = None
+                self.log("카드 선택 취소")
+            else:
+                self._play_card(card_index)
+        else:
+            self.selected_card_index = card_index
+            self.log(f"카드 선택: {self.rt.hand[card_index].name} (재클릭 사용 / ESC,X 취소)")
+
+    def _finish_card_drag(self, pos: Tuple[int, int]) -> None:
+        drag_index = self.drag_card_index
+        moved = bool(self.drag_card_moved)
+        self._clear_card_drag()
+        if drag_index is None:
+            return
+        if self.mode != "battle" or self.game_over or self.phase != "player":
+            return
+        if self.pending_attack is not None or self.actions_left <= 0:
+            return
+        if not (0 <= drag_index < len(self.rt.hand)):
+            return
+
+        if not moved:
+            self._handle_card_click_index(drag_index)
+            return
+
+        card = self.rt.hand[drag_index]
+        if card.type == "attack":
+            attack_range = int(card.stats.get("range", 1) or 1)
+            if bool(card.effects.get("max_range", False)):
+                attack_range = max(attack_range, 99)
+            in_range = set(self._in_range_enemies(attack_range))
+            target = self._enemy_hit_at_pos(pos, in_range)
+            if target is None:
+                self.selected_card_index = drag_index
+                self.log("드래그 취소: 사거리 내 적에게 놓아야 사용")
+                return
+            self.selected_unit_key = None
+            self._play_card(drag_index)
+            if self.pending_attack is not None and not self._resolve_pending_attack_target(target):
+                self._cancel_pending_attack()
+            return
+
+        unit_hit = self._unit_at_pos(pos)
+        left_zone, right_zone, _ = self._battlefield_bounds()
+        field_rect = left_zone.union(right_zone)
+        if (unit_hit is not None and unit_hit[0] == "player") or field_rect.collidepoint(pos):
+            self._play_card(drag_index)
+            return
+
+        self.selected_card_index = drag_index
+        self.log("드래그 취소: 전장으로 드래그하면 사용")
 
     def _handle_enhance_click(self, pos: Tuple[int, int]) -> None:
         collapsed = self._enh_log_collapsed_rect()
@@ -1028,16 +1223,7 @@ class CombatUI:
         for i, rect in enumerate(card_rects):
             if rect.collidepoint(pos):
                 clicked_card = True
-                card = self.rt.hand[i]
-                if self.selected_card_index == i:
-                    if card.type == "attack":
-                        self.selected_card_index = None
-                        self.log("카드 선택 취소")
-                    else:
-                        self._play_card(i)
-                else:
-                    self.selected_card_index = i
-                    self.log(f"카드 선택: {self.rt.hand[i].name} (재클릭 사용 / ESC,X 취소)")
+                self._handle_card_click_index(i)
                 return
 
         if not clicked_card and self.selected_card_index is not None:
@@ -1079,6 +1265,8 @@ class CombatUI:
 
     def _hovered_card_index(self) -> Optional[int]:
         if self.mode != "battle":
+            return None
+        if self.drag_card_index is not None:
             return None
         mx, my = pygame.mouse.get_pos()
         for i, rect in enumerate(self._display_card_rects()):
@@ -1146,8 +1334,8 @@ class CombatUI:
         lines.append(f"HP {unit.hp:.1f}/{unit.max_hp:.1f}")
         if unit.attack.power > 0:
             lines.append(f"ATK {unit.attack.power:.1f}")
-        if unit.defense.defense_power > 0:
-            lines.append(f"방어력 {unit.defense.defense_power:.1f}")
+        if unit.defense.shield_power > 0:
+            lines.append(f"방어력 {unit.defense.shield_power:.1f}")
         if kind == "player":
             base_armor, bonus_armor = self._player_armor_parts()
             if base_armor > 0 or bonus_armor > 0:
@@ -1885,7 +2073,7 @@ class CombatUI:
 
     def _play_defense(self, card: CardState) -> None:
         eff = card.effects
-        gain = card.compute_shield_amount(self.player.defense.defense_power)
+        gain = card.compute_shield_amount(self.player.defense.shield_power)
         self.player.add_shield(gain)
         self.log(f"{card.name}: 보호막 +{gain:.1f}")
 
@@ -1957,12 +2145,33 @@ class CombatUI:
         if self._check_end():
             return
 
+        self._expire_turn_shields()
         self.rt.clear_round_buffs()
         self.turn += 1
         self.actions_left = self.cfg.cards_per_turn
         drew = _draw_n(self.rt, self.cfg, self.rng, self.cfg.draw_per_turn)
         self.phase = "player"
         self.log(f"턴 {self.turn} 시작 (드로우 {drew}장)")
+
+    def _expire_turn_shields(self) -> None:
+        player_shield = max(0.0, float(self.player.state.shield))
+        if player_shield > 0.0:
+            self.player.state.shield = 0.0
+            self.log(f"턴 종료: 플레이어 보호막 해제 ({player_shield:.1f})")
+
+        cleared_enemy_count = 0
+        cleared_enemy_total = 0.0
+        for enemy in _alive_enemies(self.enemy_rows):
+            shield = max(0.0, float(enemy.state.shield))
+            if shield <= 0.0:
+                continue
+            enemy.state.shield = 0.0
+            cleared_enemy_count += 1
+            cleared_enemy_total += shield
+        if cleared_enemy_count > 0:
+            self.log(
+                f"턴 종료: 적 보호막 해제 x{cleared_enemy_count} ({cleared_enemy_total:.1f})"
+            )
 
     def _run_enemy_phase(self) -> None:
         alive = _alive_enemies(self.enemy_rows)
@@ -2206,10 +2415,13 @@ class CombatUI:
                 self.screen.blit(self.tiny.render(pos_txt, True, MUTED), (panel.right - 150, panel.bottom - 22))
 
         if self.enh_show_pity and self.enh_gacha is not None:
-            pity = pygame.Rect(self.width - 290, 104, 250, 180)
+            pity_w = 328
+            pity_h = 198
+            pity = pygame.Rect(self.width - pity_w - 24, 104, pity_w, pity_h)
             pygame.draw.rect(self.screen, PANEL, pity, border_radius=10)
             pygame.draw.rect(self.screen, BORDER, pity, width=2, border_radius=10)
             self.screen.blit(self.small.render("티어별 남은 천장", True, TEXT), (pity.x + 10, pity.y + 8))
+            probs = self.enh_gacha._adjusted_probs()
             py = pity.y + 36
             for idx in range(len(Tier) - 1, 0, -1):
                 cap = int(self.enh_gacha.caps[idx]) if idx < len(self.enh_gacha.caps) else 0
@@ -2219,7 +2431,8 @@ class CombatUI:
                 else:
                     remain = max(0, cap - fail)
                     remain_text = "확정 상태" if remain == 0 else f"{remain}회 남음"
-                txt = f"{TIERS_NAME[Tier(idx)]}: {remain_text}"
+                prob_text = f"{(probs[idx] * 100.0):.3f}%"
+                txt = f"{TIERS_NAME[Tier(idx)]}: {remain_text} | {prob_text}"
                 self.screen.blit(self.tiny.render(txt, True, _tier_color(idx)), (pity.x + 10, py))
                 py += 24
 
@@ -2269,7 +2482,7 @@ class CombatUI:
         player_frozen_turns = int(max(0, self.player.state.frozen_turns))
         if player_frozen_turns > 0:
             self._draw_freeze_effect_back(player_rect)
-        player_img = self._scaled_unit_image("player", (player_rect.w, player_rect.h))
+        player_img = self._scaled_unit_image(self.player_unit_key, (player_rect.w, player_rect.h))
         if player_img is not None:
             self.screen.blit(player_img, player_rect.topleft)
         else:
@@ -2478,8 +2691,9 @@ class CombatUI:
             rects.append(ar)
 
         selected_idx = self.selected_card_index
+        drag_idx = self.drag_card_index if self.drag_card_index is not None and 0 <= self.drag_card_index < len(rects) else None
         cancel_rect = self._selected_card_cancel_rect(rects)
-        draw_order = [i for i in range(len(rects)) if i != hovered_idx]
+        draw_order = [i for i in range(len(rects)) if i != hovered_idx and i != drag_idx]
         if hovered_idx is not None and 0 <= hovered_idx < len(rects):
             draw_order.append(hovered_idx)
 
@@ -2496,6 +2710,17 @@ class CombatUI:
             pygame.draw.rect(self.screen, (12, 16, 24), badge, border_radius=6)
             pygame.draw.rect(self.screen, BORDER, badge, width=1, border_radius=6)
             self.screen.blit(self.tiny.render(str(i + 1), True, TEXT), (badge.x + 10, badge.y + 4))
+
+        if drag_idx is not None and 0 <= drag_idx < len(self.rt.hand):
+            base_drag_rect = rects[drag_idx]
+            card = self.rt.hand[drag_idx]
+            drag_rect = pygame.Rect(0, 0, base_drag_rect.w, base_drag_rect.h)
+            drag_rect.x = self.drag_card_mouse_pos[0] - self.drag_card_anchor[0]
+            drag_rect.y = self.drag_card_mouse_pos[1] - self.drag_card_anchor[1]
+            glow = drag_rect.inflate(16, 16)
+            pygame.draw.rect(self.screen, (255, 225, 120), glow, width=3, border_radius=14)
+            self._draw_card_visual(card, drag_rect)
+            pygame.draw.rect(self.screen, BORDER, drag_rect, width=2, border_radius=10)
 
         if cancel_rect is not None:
             pygame.draw.rect(self.screen, (70, 32, 32), cancel_rect, border_radius=6)
@@ -2652,6 +2877,11 @@ def run_meet_combat(
     min_enhance_tier_rolls: int = 0,
     width: int = 1280,
     height: int = 800,
+    player_profile: Optional[Dict[str, Any]] = None,
+    unit_archetypes: Optional[Dict[str, Dict[str, Any]]] = None,
+    template_state: Optional[List[Dict[str, Any]]] = None,
+    template_state_out: Optional[List[Dict[str, Any]]] = None,
+    player_state_out: Optional[Dict[str, Any]] = None,
 ) -> Optional[bool]:
     """Meet 전투를 1회 실행하고 결과를 반환한다.
 
@@ -2670,8 +2900,18 @@ def run_meet_combat(
         forced_initial_draw=max(0.0, float(initial_draw)),
         forced_min_enhance_tier=max(0, int(min_enhance_tier)),
         forced_min_enhance_tier_rolls=max(0, int(min_enhance_tier_rolls)),
+        player_profile=player_profile,
+        unit_archetypes=unit_archetypes,
+        initial_template_state=template_state,
     )
-    return ui.run(quit_on_exit=False, stop_on_game_over=True)
+    result = ui.run(quit_on_exit=False, stop_on_game_over=True)
+    if template_state_out is not None:
+        template_state_out.clear()
+        template_state_out.extend(ui.export_template_state())
+    if player_state_out is not None:
+        player_state_out.clear()
+        player_state_out.update(ui.export_player_state())
+    return result
 
 
 def run_enhancement_choices(
@@ -2681,6 +2921,10 @@ def run_enhancement_choices(
     seed: Optional[int] = None,
     width: int = 1280,
     height: int = 800,
+    player_profile: Optional[Dict[str, Any]] = None,
+    unit_archetypes: Optional[Dict[str, Dict[str, Any]]] = None,
+    template_state: Optional[List[Dict[str, Any]]] = None,
+    template_state_out: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
     """강화 선택 페이즈만 실행하고, 덱 요약 라인을 반환한다."""
     ui = CombatUI(
@@ -2691,8 +2935,14 @@ def run_enhancement_choices(
         forced_start_enhance_rolls=max(0, int(enhance_rolls)),
         forced_min_enhance_tier=max(0, int(min_enhance_tier)),
         forced_min_enhance_tier_rolls=max(0, int(min_enhance_tier_rolls)),
+        player_profile=player_profile,
+        unit_archetypes=unit_archetypes,
+        initial_template_state=template_state,
     )
     ui.run(quit_on_exit=False, stop_on_enhance_complete=True)
+    if template_state_out is not None:
+        template_state_out.clear()
+        template_state_out.extend(ui.export_template_state())
     lines: List[str] = []
     if ui.enh_templates:
         lines.append(f"총 {len(ui.enh_templates) * 5}장")

@@ -37,7 +37,7 @@ class UpgradeGUI(tk.Tk):
             max_hp=1.0,
             hp=1.0,
             attack=AttackProfile(power=100.0),
-            defense=DefenseProfile(armor=0.0, defense_power=100.0),
+            defense=DefenseProfile(armor=0.0, shield_power=100.0),
         )
         self.n_choices = n_choices
 

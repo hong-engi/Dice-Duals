@@ -41,7 +41,7 @@ class AttackProfile:
 @dataclass
 class DefenseProfile:
     armor: float = 0.0
-    defense_power: float = 0.0
+    shield_power: float = 0.0
     reduction_ratio: float = 0.0
 
     def mitigate(self, incoming_damage: float) -> float:

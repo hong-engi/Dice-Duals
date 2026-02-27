@@ -597,7 +597,7 @@ def _apply_armor_down(target: Enemy | Player | Comrade, ratio: float) -> None:
     r = max(0.0, min(1.0, ratio))
     keep = 1.0 - r
     target.defense.armor *= keep
-    target.defense.defense_power *= keep
+    target.defense.shield_power *= keep
     target.defense.reduction_ratio *= keep
 
 
@@ -617,7 +617,7 @@ def _summon_comrade(unit_key: str, rt: CombatRuntime) -> None:
                 max_hp=120.0,
                 hp=120.0,
                 attack=AttackProfile(power=40.0),
-                defense=DefenseProfile(armor=5.0, defense_power=0.0),
+                defense=DefenseProfile(armor=5.0, shield_power=0.0),
             )
         )
         print("- 늑대를 소환했습니다.")
@@ -634,7 +634,7 @@ def _summon_comrade(unit_key: str, rt: CombatRuntime) -> None:
                 max_hp=240.0,
                 hp=240.0,
                 attack=AttackProfile(power=0.0),
-                defense=DefenseProfile(armor=20.0, defense_power=0.0),
+                defense=DefenseProfile(armor=20.0, shield_power=0.0),
             )
         )
         print("- 바리케이드를 소환했습니다.")
@@ -655,8 +655,8 @@ def _render_status(
     player_parts = [f"플레이어 HP {player.hp:.1f}/{player.max_hp:.1f}"]
     if player.attack.power > 0:
         player_parts.append(f"기본 피해 {player.attack.power:.1f}")
-    if player.defense.defense_power > 0:
-        player_parts.append(f"방어력 {player.defense.defense_power:.1f}")
+    if player.defense.shield_power > 0:
+        player_parts.append(f"방어력 {player.defense.shield_power:.1f}")
     if player.defense.armor > 0:
         player_parts.append(f"갑옷 {player.defense.armor:.1f}")
     if player.state.shield > 0:
@@ -696,8 +696,8 @@ def _render_status(
                 parts = [f"  · {e.name}: HP {e.hp:.1f}/{e.max_hp:.1f}, 거리 {dist.get(e.unit_id, '?')}"]
                 if e.attack.power > 0:
                     parts.append(f"ATK {e.attack.power:.1f}")
-                if e.defense.defense_power > 0:
-                    parts.append(f"방어력 {e.defense.defense_power:.1f}")
+                if e.defense.shield_power > 0:
+                    parts.append(f"방어력 {e.defense.shield_power:.1f}")
                 if e.defense.armor > 0:
                     parts.append(f"갑옷 {e.defense.armor:.1f}")
                 if e.state.shield > 0:
@@ -898,7 +898,7 @@ def _resolve_player_defense(
     cfg: CombatConfig,
 ) -> None:
     eff = card.effects
-    gain = card.compute_shield_amount(player.defense.defense_power)
+    gain = card.compute_shield_amount(player.defense.shield_power)
     player.add_shield(gain)
     print(f"{card.name} 사용: 보호막 {gain:.1f} 획득")
 
@@ -1082,7 +1082,7 @@ def _build_enemy_rows(row_counts: List[int]) -> List[List[Enemy]]:
     #                 max_hp=300.0,
     #                 hp=300.0,
     #                 attack=AttackProfile(power=30.0),
-    #                 defense=DefenseProfile(armor=0.0, defense_power=0.0),
+    #                 defense=DefenseProfile(armor=0.0, shield_power=0.0),
     #             )
     #         )
     #     if row:
@@ -1096,7 +1096,7 @@ def _build_enemy_rows(row_counts: List[int]) -> List[List[Enemy]]:
                 max_hp=300.0,
                 hp=300.0,
                 attack=AttackProfile(power=30.0),
-                defense=DefenseProfile(armor=20.0, defense_power=0.0),
+                defense=DefenseProfile(armor=20.0, shield_power=0.0),
             ),
             Enemy(
                 unit_id=f"wolf",
@@ -1104,7 +1104,7 @@ def _build_enemy_rows(row_counts: List[int]) -> List[List[Enemy]]:
                 max_hp=300.0,
                 hp=300.0,
                 attack=AttackProfile(power=30.0),
-                defense=DefenseProfile(armor=20.0, defense_power=0.0),
+                defense=DefenseProfile(armor=20.0, shield_power=0.0),
             )
         ]
     )
@@ -1117,7 +1117,7 @@ def _build_enemy_rows(row_counts: List[int]) -> List[List[Enemy]]:
                 max_hp=200.0,
                 hp=200.0,
                 attack=AttackProfile(power=60.0),
-                defense=DefenseProfile(armor=0.0, defense_power=0.0),
+                defense=DefenseProfile(armor=0.0, shield_power=0.0),
             ),
             Enemy(
                 unit_id=f"archer",
@@ -1125,7 +1125,7 @@ def _build_enemy_rows(row_counts: List[int]) -> List[List[Enemy]]:
                 max_hp=200.0,
                 hp=200.0,
                 attack=AttackProfile(power=60.0),
-                defense=DefenseProfile(armor=0.0, defense_power=0.0),
+                defense=DefenseProfile(armor=0.0, shield_power=0.0),
             )
         ]
     )
@@ -1138,7 +1138,7 @@ def _build_enemy_rows(row_counts: List[int]) -> List[List[Enemy]]:
                 max_hp=50.0,
                 hp=50.0,
                 attack=AttackProfile(power=150.0),
-                defense=DefenseProfile(armor=0.0, defense_power=0.0),
+                defense=DefenseProfile(armor=0.0, shield_power=0.0),
             ),
         ]
     )
@@ -1163,7 +1163,7 @@ def run_basic_combat(cfg: Optional[CombatConfig] = None) -> None:
         hp=500.0,
         cards=[],
         attack=AttackProfile(power=50.0),
-        defense=DefenseProfile(armor=15.0, defense_power=50.0),
+        defense=DefenseProfile(armor=15.0, shield_power=50.0),
     )
     templates = _build_starting_card_templates(engine)
     try:

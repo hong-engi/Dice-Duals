@@ -58,6 +58,7 @@
   },
   "attack": {
     "card_name": "기본 공격",
+    "description": "적에게 피해를 공격력의 100%만큼 입히는 카드입니다.",
     "visual": {
       "image_path": "images/card_images/card_attack.png"
     },

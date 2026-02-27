@@ -87,7 +87,8 @@ ABILITY_T2_ENHANCE_CELL_1B = 13
 ABILITY_REMOVE_CELL_1B = 19
 COMBAT_START_HAND = 4.0
 COMBAT_PRE_GAME_ENHANCE_ROLLS = 10
-COMBAT_MEET_ENHANCE_ROLLS = 5
+COMBAT_MEET_ENHANCE_ROLLS = 0
+COMBAT_ENHANCE_ROLLS_PER_KILL = 3
 COMBAT_T2_PLUS_TIER = 2
 STUN_SPIN_CYCLE_MS = 4500.0
 STUN_HAMMER_SWING_BASE_MS = 360
@@ -102,7 +103,26 @@ HAMMER_SWING_START_DEG = 60.0
 MARKER_REF_BOARD_SIZE = 700.0
 T2_MARKER_CENTER_REF = (671.0, 100.0)
 T2_MARKER_RADIUS_REF = 11.0
-ENEMY_UNIT_TYPES = ("wolf", "archer", "mage")
+COMBAT_PLAYER_PROFILE: dict[str, float | str] = {
+    "unit_id": "player",
+    "unit_key": "player",
+    "name": "플레이어",
+    "max_hp": 500.0,
+    "attack": 50.0,
+    "armor": 20.0,
+    "shield_power": 50.0,
+}
+COMBAT_UNIT_ARCHETYPES: dict[str, dict[str, float | str]] = {
+    "wolf": {"name": "늑대", "max_hp": 300.0, "attack": 30.0, "armor": 20.0},
+    "archer": {"name": "궁수", "max_hp": 200.0, "attack": 60.0, "armor": 0.0},
+    "mage": {"name": "마법사", "max_hp": 50.0, "attack": 150.0, "armor": 0.0},
+}
+ENEMY_UNIT_TYPES = tuple(COMBAT_UNIT_ARCHETYPES.keys())
+ENEMY_START_COUNT = 8
+ENEMY_ADD_PER_LAP = 8
+ENEMY_ANIM_SPEED_PER_EXTRA = 0.06
+ENEMY_ANIM_SPEED_MAX = 3.0
+ENEMY_SUMMON_BASE_MS = 560
 UNIT_FALLBACK_COLORS: dict[str, tuple[int, int, int]] = {
     "player": (226, 114, 108),
     "wolf": (118, 194, 255),
@@ -635,8 +655,10 @@ def main() -> int | None:
 
     # Move state
     current_phase = "Throw"
-    pre_move_ms = int(1000 / ANIMATION_SPEED)
-    post_move_ms = int(500 / ANIMATION_SPEED)
+    player_pre_move_ms = int(1000 / ANIMATION_SPEED)
+    player_post_move_ms = int(500 / ANIMATION_SPEED)
+    enemy_pre_move_base_ms = int(1000 / ANIMATION_SPEED)
+    enemy_post_move_base_ms = int(500 / ANIMATION_SPEED)
     phase_timer_start_ms = 0
     token_position = 0
     move_total = 0
@@ -650,8 +672,8 @@ def main() -> int | None:
     roll_result_pause_ms = int(520 / ANIMATION_SPEED)
     roll_result_start_ms = 0
 
-    # 내부 루프 파란 말(독립 이동)
-    blue_tokens: list[int] = [random.randrange(len(inner_path)), random.randrange(len(inner_path))]
+    # 내부 루프 적 말(독립 이동): 시작 시 8마리 배치
+    blue_tokens: list[int] = [random.randrange(len(inner_path)) for _ in range(ENEMY_START_COUNT)]
     blue_token_types: list[str] = [_random_enemy_unit_type() for _ in blue_tokens]
     blue_stun_turns: list[int] = [0 for _ in blue_tokens]
     blue_move_queue: list[dict[str, int | str]] = []
@@ -662,10 +684,16 @@ def main() -> int | None:
     blue_active_from = 0
     blue_active_to = 0
     blue_active_start_ms = 0
-    blue_active_duration_ms = int(155 / ANIMATION_SPEED)
-    blue_sleep_duration_ms = int(1000 / ANIMATION_SPEED)
-    blue_stun_duration_ms = int(700 / ANIMATION_SPEED)
-    blue_remove_duration_ms = int(650 / ANIMATION_SPEED)
+    enemy_move_base_ms = int(155 / ANIMATION_SPEED)
+    enemy_sleep_base_ms = int(1000 / ANIMATION_SPEED)
+    enemy_stun_base_ms = int(700 / ANIMATION_SPEED)
+    enemy_remove_base_ms = int(650 / ANIMATION_SPEED)
+    enemy_spawn_base_ms = int(ENEMY_SUMMON_BASE_MS / ANIMATION_SPEED)
+    blue_active_duration_ms = enemy_move_base_ms
+    blue_sleep_duration_ms = enemy_sleep_base_ms
+    blue_stun_duration_ms = enemy_stun_base_ms
+    blue_remove_duration_ms = enemy_remove_base_ms
+    blue_spawn_effects: list[dict[str, float]] = []
     meet_banner_until_ms = 0
     meet_effects: list[dict[str, float]] = []
     current_meeting_blue_ids: set[int] = set()
@@ -695,6 +723,31 @@ def main() -> int | None:
     t2_plus_banner_text = ""
     deck_panel_open = False
     deck_preview_lines: list[str] = []
+    combat_template_state: list[dict[str, object]] = []
+    board_player_hp = float(COMBAT_PLAYER_PROFILE.get("max_hp", 500.0))
+
+    def _enemy_anim_speed_multiplier() -> float:
+        extra_enemies = max(0, len(blue_tokens) - ENEMY_START_COUNT)
+        return min(ENEMY_ANIM_SPEED_MAX, 1.0 + (extra_enemies * ENEMY_ANIM_SPEED_PER_EXTRA))
+
+    def _enemy_phase_duration(base_ms: int, min_ms: int = 40) -> int:
+        speed_mul = max(1.0, _enemy_anim_speed_multiplier())
+        return max(min_ms, int(round(base_ms / speed_mul)))
+
+    def _register_blue_spawn(token_i: int, now_ms: int, stagger_ms: int = 0) -> None:
+        if not (0 <= token_i < len(blue_tokens)):
+            return
+        blue_spawn_effects.append(
+            {
+                "token_i": float(token_i),
+                "start_ms": float(now_ms + max(0, int(stagger_ms))),
+                "duration_ms": float(_enemy_phase_duration(enemy_spawn_base_ms, min_ms=120)),
+            }
+        )
+
+    _initial_spawn_ms = pg.time.get_ticks()
+    for _spawn_i in range(len(blue_tokens)):
+        _register_blue_spawn(_spawn_i, _initial_spawn_ms, stagger_ms=36 * _spawn_i)
 
     def _begin_player_pre_move(now_ms: int) -> None:
         nonlocal current_phase, move_total, move_left, pending_move_total, phase_timer_start_ms, is_charging
@@ -711,6 +764,7 @@ def main() -> int | None:
     def _begin_next_blue_pre_move(now_ms: int) -> None:
         nonlocal current_phase, phase_timer_start_ms
         nonlocal blue_active_token_i, blue_active_order, blue_active_steps_left, blue_active_mode
+        nonlocal blue_sleep_duration_ms, blue_stun_duration_ms
         if not blue_move_queue:
             blue_active_token_i = None
             blue_active_order = 0
@@ -724,9 +778,11 @@ def main() -> int | None:
         blue_active_mode = head["mode"]
         blue_active_steps_left = head["steps"]
         if blue_active_mode == "sleep":
+            blue_sleep_duration_ms = _enemy_phase_duration(enemy_sleep_base_ms, min_ms=120)
             current_phase = "BlueSleep"
             phase_timer_start_ms = now_ms
         elif blue_active_mode == "stun":
+            blue_stun_duration_ms = _enemy_phase_duration(enemy_stun_base_ms, min_ms=100)
             current_phase = "BlueStun"
             phase_timer_start_ms = now_ms
         else:
@@ -796,7 +852,7 @@ def main() -> int | None:
                 item["steps"] = 0
 
     def _remove_blue_by_index(token_i: int) -> None:
-        nonlocal blue_active_token_i, current_meeting_blue_ids
+        nonlocal blue_active_token_i, current_meeting_blue_ids, blue_spawn_effects
         if not (0 <= token_i < len(blue_tokens)):
             return
         blue_tokens.pop(token_i)
@@ -837,6 +893,16 @@ def main() -> int | None:
             fixed_effects.append(e)
         meet_effects[:] = fixed_effects
 
+        fixed_spawn_effects: list[dict[str, float]] = []
+        for e in blue_spawn_effects:
+            bi = int(e.get("token_i", -1))
+            if bi == token_i:
+                continue
+            if bi > token_i:
+                e["token_i"] = float(bi - 1)
+            fixed_spawn_effects.append(e)
+        blue_spawn_effects = fixed_spawn_effects
+
     def _apply_cell_stun(cell_idx: int) -> None:
         targets = [i for i, p in enumerate(blue_tokens) if p == cell_idx]
         if not targets:
@@ -857,11 +923,13 @@ def main() -> int | None:
     def _start_remove_effect(cell_idx: int, now_ms: int) -> bool:
         nonlocal current_phase, phase_timer_start_ms
         nonlocal blue_remove_effects, pending_remove_token_ids, blue_remove_return_phase
+        nonlocal blue_remove_duration_ms
         targets = [i for i, p in enumerate(blue_tokens) if p == cell_idx]
         if not targets:
             return False
         pending_remove_token_ids = set(targets)
         blue_remove_return_phase = "PlayerPostMove"
+        blue_remove_duration_ms = _enemy_phase_duration(enemy_remove_base_ms, min_ms=110)
         blue_remove_effects = [
             {
                 "token_i": float(i),
@@ -980,6 +1048,8 @@ def main() -> int | None:
         nonlocal is_charging, is_resolving, current_gauge, gauge_dir
         nonlocal pending_t2_plus_rolls
         nonlocal blue_remove_effects, pending_remove_token_ids, blue_remove_return_phase
+        nonlocal blue_remove_duration_ms
+        nonlocal deck_preview_lines, combat_template_state, board_player_hp
         if not new_meets:
             return False
 
@@ -989,6 +1059,10 @@ def main() -> int | None:
             blue_token_types[i] if 0 <= i < len(blue_token_types) else _random_enemy_unit_type()
             for i in sorted(new_meets)
         ]
+        combat_player_profile = dict(COMBAT_PLAYER_PROFILE)
+        max_hp = float(combat_player_profile.get("max_hp", 500.0) or 500.0)
+        combat_player_profile["current_hp"] = max(0.0, min(max_hp, float(board_player_hp)))
+        player_state_out: dict[str, object] = {}
         result = run_meet_combat(
             enemy_count=len(new_meets),
             enemy_types=encounter_types,
@@ -999,7 +1073,14 @@ def main() -> int | None:
             min_enhance_tier_rolls=t2_plus_rolls,
             width=screen_w,
             height=screen_h,
+            player_profile=combat_player_profile,
+            unit_archetypes=COMBAT_UNIT_ARCHETYPES,
+            template_state=combat_template_state,
+            template_state_out=combat_template_state,
+            player_state_out=player_state_out,
         )
+        if "hp" in player_state_out:
+            board_player_hp = max(0.0, float(player_state_out["hp"]))
 
         # 전투 UI가 display mode를 바꾸므로 보드 화면을 복구한다.
         screen = pg.display.set_mode((screen_w, screen_h))
@@ -1008,8 +1089,30 @@ def main() -> int | None:
 
         if result is True:
             remove_targets = sorted(i for i in new_meets if 0 <= i < len(blue_tokens))
+            reward_rolls = max(0, len(remove_targets) * COMBAT_ENHANCE_ROLLS_PER_KILL)
+            if reward_rolls > 0:
+                t2_plus_reward_rolls = min(reward_rolls, t2_plus_rolls) if t2_plus_rolls > 0 else 0
+                updated_deck = run_enhancement_choices(
+                    enhance_rolls=reward_rolls,
+                    min_enhance_tier=(COMBAT_T2_PLUS_TIER if t2_plus_reward_rolls > 0 else 0),
+                    min_enhance_tier_rolls=t2_plus_reward_rolls,
+                    seed=random.randrange(1 << 30),
+                    width=screen_w,
+                    height=screen_h,
+                    player_profile=COMBAT_PLAYER_PROFILE,
+                    unit_archetypes=COMBAT_UNIT_ARCHETYPES,
+                    template_state=combat_template_state,
+                    template_state_out=combat_template_state,
+                )
+                if updated_deck:
+                    deck_preview_lines = list(updated_deck)
+                # 강화 UI가 display mode를 바꾸므로 보드 화면을 복구한다.
+                screen = pg.display.set_mode((screen_w, screen_h))
+                pg.display.set_caption("Dice Duals - Dice Visualization")
+                pg.event.clear()
             if remove_targets:
                 pending_remove_token_ids = set(remove_targets)
+                blue_remove_duration_ms = _enemy_phase_duration(enemy_remove_base_ms, min_ms=110)
                 blue_remove_effects = [
                     {
                         "token_i": float(i),
@@ -1063,7 +1166,7 @@ def main() -> int | None:
     def _resolve_player_landed_cell(now_ms: int) -> None:
         nonlocal current_phase, phase_timer_start_ms, screen
         nonlocal t2_plus_counter, pending_t2_plus_rolls, t2_plus_banner_until_ms, t2_plus_banner_text
-        nonlocal deck_preview_lines
+        nonlocal deck_preview_lines, combat_template_state
         landed_cell = token_position + 1  # 1-based
         if landed_cell == ABILITY_T2_ENHANCE_CELL_1B:
             gain_rolls = t2_plus_counter
@@ -1075,6 +1178,10 @@ def main() -> int | None:
                 seed=random.randrange(1 << 30),
                 width=screen_w,
                 height=screen_h,
+                player_profile=COMBAT_PLAYER_PROFILE,
+                unit_archetypes=COMBAT_UNIT_ARCHETYPES,
+                template_state=combat_template_state,
+                template_state_out=combat_template_state,
             )
             if updated_deck:
                 deck_preview_lines = list(updated_deck)
@@ -1090,7 +1197,9 @@ def main() -> int | None:
             blue_tokens.append(random.randrange(len(inner_path)))
             blue_token_types.append(_random_enemy_unit_type())
             blue_stun_turns.append(0)
-            _enqueue_blue_for_current_turn(len(blue_tokens) - 1, force_move=True)
+            new_blue_i = len(blue_tokens) - 1
+            _register_blue_spawn(new_blue_i, now_ms)
+            _enqueue_blue_for_current_turn(new_blue_i, force_move=True)
 
         if landed_cell == ABILITY_STUN_CELL_1B and len(blue_tokens) > 0:
             current_phase = "AbilitySelectStun"
@@ -1113,6 +1222,10 @@ def main() -> int | None:
         seed=random.randrange(1 << 30),
         width=screen_w,
         height=screen_h,
+        player_profile=COMBAT_PLAYER_PROFILE,
+        unit_archetypes=COMBAT_UNIT_ARCHETYPES,
+        template_state=combat_template_state,
+        template_state_out=combat_template_state,
     )
     if not deck_preview_lines:
         deck_preview_lines = ["덱 정보가 없습니다."]
@@ -1278,7 +1391,7 @@ def main() -> int | None:
 
         if current_phase == "PlayerPreMove":
             now_ms = pg.time.get_ticks()
-            if now_ms - phase_timer_start_ms >= pre_move_ms:
+            if now_ms - phase_timer_start_ms >= player_pre_move_ms:
                 current_phase = "Move"
                 step_from_position = token_position
                 step_to_position = (token_position + 1) % len(board_path)
@@ -1299,15 +1412,17 @@ def main() -> int | None:
                 prev_position = token_position
                 token_position = step_to_position
 
-                # 외곽 루프 한 바퀴 완주 시 내부 루프에 파란 말 1개 추가
+                # 외곽 루프 한 바퀴 완주 시 내부 루프에 적 말 8마리 추가
                 if prev_position == (len(board_path) - 1) and token_position == 0:
                     player_lap_count += 1
-                    blue_tokens.append(random.randrange(len(inner_path)))
-                    blue_token_types.append(_random_enemy_unit_type())
-                    blue_stun_turns.append(0)
-                    # 이번 턴 블루 행동 큐에도 즉시 포함시켜서 반드시 이동하게 한다.
-                    new_blue_i = len(blue_tokens) - 1
-                    _enqueue_blue_for_current_turn(new_blue_i, force_move=True)
+                    for _ in range(ENEMY_ADD_PER_LAP):
+                        blue_tokens.append(random.randrange(len(inner_path)))
+                        blue_token_types.append(_random_enemy_unit_type())
+                        blue_stun_turns.append(0)
+                        # 이번 턴 블루 행동 큐에도 즉시 포함시켜서 반드시 이동하게 한다.
+                        new_blue_i = len(blue_tokens) - 1
+                        _register_blue_spawn(new_blue_i, now_ms, stagger_ms=30 * _)
+                        _enqueue_blue_for_current_turn(new_blue_i, force_move=True)
 
                 move_left -= 1
                 if move_left <= 0:
@@ -1320,12 +1435,12 @@ def main() -> int | None:
 
         if current_phase == "PlayerPostMove":
             now_ms = pg.time.get_ticks()
-            if now_ms - phase_timer_start_ms >= post_move_ms:
+            if now_ms - phase_timer_start_ms >= player_post_move_ms:
                 _begin_next_blue_pre_move(now_ms)
 
         if current_phase == "BluePreMove":
             now_ms = pg.time.get_ticks()
-            if now_ms - phase_timer_start_ms >= pre_move_ms:
+            if now_ms - phase_timer_start_ms >= _enemy_phase_duration(enemy_pre_move_base_ms, min_ms=80):
                 if blue_active_token_i is None:
                     _begin_next_blue_pre_move(now_ms)
                 else:
@@ -1333,6 +1448,7 @@ def main() -> int | None:
                     blue_active_from = blue_tokens[blue_active_token_i]
                     blue_active_to = (blue_active_from + 1) % len(inner_path)
                     blue_active_start_ms = now_ms
+                    blue_active_duration_ms = _enemy_phase_duration(enemy_move_base_ms, min_ms=36)
 
         if current_phase == "BlueSleep":
             now_ms = pg.time.get_ticks()
@@ -1387,6 +1503,7 @@ def main() -> int | None:
                     blue_active_from = blue_tokens[blue_active_token_i]
                     blue_active_to = (blue_active_from + 1) % len(inner_path)
                     blue_active_start_ms = now_ms
+                    blue_active_duration_ms = _enemy_phase_duration(enemy_move_base_ms, min_ms=36)
                 else:
                     if not _begin_meet_lightning(_update_meet_events(now_ms), now_ms, "BluePostMove"):
                         current_phase = "BluePostMove"
@@ -1394,7 +1511,7 @@ def main() -> int | None:
 
         if current_phase == "BluePostMove":
             now_ms = pg.time.get_ticks()
-            if now_ms - phase_timer_start_ms >= post_move_ms:
+            if now_ms - phase_timer_start_ms >= _enemy_phase_duration(enemy_post_move_base_ms, min_ms=60):
                 _begin_next_blue_pre_move(now_ms)
 
         # Draw
@@ -1530,9 +1647,18 @@ def main() -> int | None:
                 px, py = board_path[idx]
                 is_corner = (idx + 1) in corner_cells_1b
                 label_font = font_path_num_corner if is_corner else font_path_num
-                txt = label_font.render(str(label), True, (255, 245, 225))
-                txt.set_alpha(210 if is_corner else 192)
+                label_text = str(label)
+                txt = label_font.render(label_text, True, (255, 245, 225))
+                txt_alpha = 210 if is_corner else 192
+                txt.set_alpha(txt_alpha)
                 txt_rect = txt.get_rect(center=(int(px), int(py)))
+
+                outline = label_font.render(label_text, True, (12, 12, 12))
+                outline.set_alpha(min(255, txt_alpha + 24))
+                for ox, oy in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)):
+                    o_rect = outline.get_rect(center=(int(px + ox), int(py + oy)))
+                    screen.blit(outline, o_rect)
+
                 screen.blit(txt, txt_rect)
 
         # Token (이동 중에는 칸 단위 ease-out으로 보간)
@@ -1625,6 +1751,17 @@ def main() -> int | None:
             alive_remove_effects.append(e)
             remove_effect_progress[int(e["token_i"])] = float(elapsed / duration)
         blue_remove_effects = alive_remove_effects
+        alive_spawn_effects: list[dict[str, float]] = []
+        spawn_effect_progress: dict[int, float] = {}
+        for e in blue_spawn_effects:
+            elapsed = now_ms_draw - e["start_ms"]
+            duration = max(1.0, e["duration_ms"])
+            if elapsed < 0 or elapsed > duration:
+                continue
+            alive_spawn_effects.append(e)
+            spawn_effect_progress[int(e["token_i"])] = float(elapsed / duration)
+        blue_spawn_effects = alive_spawn_effects
+        summoning_active = bool(spawn_effect_progress)
 
         for i, idx in enumerate(blue_tokens):
             is_stunned_visual = _is_blue_stunned_visual(i)
@@ -1641,19 +1778,37 @@ def main() -> int | None:
                 bx += shake_x
 
             blue_draw_centers[i] = (bx, by)
-            token_rect = pg.Rect(0, 0, draw_size, draw_size)
-            token_rect.center = (int(round(bx)), int(round(by)))
             unit_kind = blue_token_types[i] if 0 <= i < len(blue_token_types) else _random_enemy_unit_type()
             unit_img = get_unit_image(unit_kind, draw_size)
+            spawn_p = spawn_effect_progress.get(i)
+            token_rect = pg.Rect(0, 0, draw_size, draw_size)
+            token_rect.center = (int(round(bx)), int(round(by)))
+            draw_img = unit_img
+            if remove_p is None and spawn_p is not None:
+                p = max(0.0, min(1.0, spawn_p))
+                eased = ease_out_cubic(p)
+                summon_h = max(1, int(round(draw_size * eased)))
+                draw_img = pg.transform.smoothscale(unit_img, (draw_size, summon_h))
+                token_rect = draw_img.get_rect(
+                    midbottom=(int(round(bx)), int(round(by + (draw_size * 0.5))))
+                )
 
             if remove_p is not None:
                 rp = max(0.0, min(1.0, remove_p))
                 alpha = int(255 * (1.0 - rp))
                 tmp = unit_img.copy()
+                # 제거 연출 동안 이미지 자체에 붉은 기운을 점점 강하게 얹는다.
+                tint_p = 0.30 + (0.70 * rp)
+                tint_add = pg.Surface((token_rect.w, token_rect.h), pg.SRCALPHA)
+                tint_add.fill((int(92 * tint_p), int(26 * tint_p), int(18 * tint_p), 0))
+                tmp.blit(tint_add, (0, 0), special_flags=pg.BLEND_RGBA_ADD)
+                tint_sub = pg.Surface((token_rect.w, token_rect.h), pg.SRCALPHA)
+                tint_sub.fill((0, int(24 * tint_p), int(40 * tint_p), 0))
+                tmp.blit(tint_sub, (0, 0), special_flags=pg.BLEND_RGBA_SUB)
                 tmp.set_alpha(alpha)
                 screen.blit(tmp, token_rect.topleft)
             else:
-                screen.blit(unit_img, token_rect.topleft)
+                screen.blit(draw_img, token_rect.topleft)
                 if is_stunned_visual:
                     stun_img = get_stun_effect_image(max(16, int(draw_size * 0.92)))
                     cycle_ms = STUN_SPIN_CYCLE_MS
@@ -1803,6 +1958,9 @@ def main() -> int | None:
         elif meet_active:
             button_text = "!!ENGAGE!!"
             button_font = font_button_bold
+        elif summoning_active:
+            button_text = "Summoning..."
+            button_font = font_button_bold
         else:
             active_enemy_name = "enemy"
             if blue_active_token_i is not None and 0 <= blue_active_token_i < len(blue_token_types):
@@ -1826,7 +1984,7 @@ def main() -> int | None:
             elif current_phase == "BluePreMove":
                 button_text = f"{active_enemy_name} Ready..."
             elif current_phase == "BluePostMove":
-                button_text = f"{active_enemy_name} Done..."
+                button_text = f"..."
             elif current_phase == "AbilitySelectStun":
                 button_text = "HAMMERTIME!!!"
             elif current_phase == "AbilitySelectRemove":

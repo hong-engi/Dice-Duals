@@ -522,7 +522,7 @@ def interactive_session(
         max_hp=1.0,
         hp=1.0,
         attack=AttackProfile(power=100.0),
-        defense=DefenseProfile(armor=0.0, defense_power=100.0),
+        defense=DefenseProfile(armor=0.0, shield_power=100.0),
     )
     last_result: Optional[Dict[str, Any]] = None
     last_before: Optional[CardState] = None
@@ -580,8 +580,8 @@ def interactive_session(
         probs = g._adjusted_probs()
         forced = g._forced_min_tier()
         forced_name = TIERS_NAME[Tier(forced)] if forced >= 0 else "없음"
-
-        print("\n천장 티어:", forced_name)
+        forced_prob_text = pct(probs[forced]) if forced >= 0 else "-"
+        print(f"\n천장 티어: {forced_name} | 확률 {forced_prob_text}")
         print("\n[현재 강화 확률]")
         print(probs_block(probs))
         

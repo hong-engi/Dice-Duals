@@ -461,9 +461,9 @@ def _extract_player_defense(player: Any, default: float = 100.0) -> float:
     if isinstance(defense_obj, (int, float)):
         return max(0.0, safe_float(defense_obj, default))
     if defense_obj is not None:
-        defense_power = getattr(defense_obj, "defense_power", None)
-        if defense_power is not None:
-            return max(0.0, safe_float(defense_power, default))
+        shield_power = getattr(defense_obj, "shield_power", None)
+        if shield_power is not None:
+            return max(0.0, safe_float(shield_power, default))
         armor = getattr(defense_obj, "armor", None)
         if armor is not None:
             return max(0.0, safe_float(armor, default))
