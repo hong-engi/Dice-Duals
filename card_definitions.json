@@ -755,14 +755,14 @@
             ]
           },
           {
-            "id": "def_draw_0_1",
-            "display": "카드를 0.1장 뽑는다",
+            "id": "def_draw_0_2",
+            "display": "카드를 0.2장 뽑는다",
             "effects": [
               {
                 "type": "effect.additive",
                 "effect": "draw",
                 "field": "cards",
-                "value": 0.1
+                "value": 0.2
               }
             ]
           }
@@ -841,14 +841,14 @@
             ]
           },
           {
-            "id": "def_draw_0_3",
-            "display": "카드를 0.3장 뽑는다",
+            "id": "def_draw_0_4",
+            "display": "카드를 0.4장 뽑는다",
             "effects": [
               {
                 "type": "effect.additive",
                 "effect": "draw",
                 "field": "cards",
-                "value": 0.3
+                "value": 0.4
               }
             ]
           }
@@ -924,14 +924,14 @@
             ]
           },
           {
-            "id": "def_on_hit_draw_1_0",
-            "display": "피격 시 카드 1장",
+            "id": "def_on_hit_draw_0_5",
+            "display": "피격 시 카드 0.5장",
             "effects": [
               {
                 "type": "effect.additive",
                 "effect": "on_hit_draw",
                 "field": "cards",
-                "value": 1.0
+                "value": 0.5
               }
             ]
           },

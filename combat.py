@@ -295,7 +295,7 @@ def _manual_enhance_starting_cards(
                 print(f"{i}) {_card_label(card)}")
                 print(f"   현재: {describe_card(card, preview_player)}")
                 print(
-                    f"   제안: {_tier_name_ko(Tier(idx).name)} - "
+                    f"   강화: {_tier_name_ko(Tier(idx).name)} - "
                     f"{plan.get('display', '')}{plan.get('preview_roll_text', '')}"
                 )
 
